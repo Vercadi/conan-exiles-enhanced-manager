@@ -99,3 +99,11 @@ def test_large_active_mod_row_formatting_is_stable() -> None:
     assert row.startswith("512. [!]")
     assert "Example" in row
     assert len(row) < 150
+
+
+def test_disabled_active_mod_row_is_marked_without_missing_flag() -> None:
+    entry = ActiveModEntry("Example.pak", display_name="Example", enabled=False)
+
+    row = format_active_mod_row(1, entry, missing=True)
+
+    assert "[off]" in row

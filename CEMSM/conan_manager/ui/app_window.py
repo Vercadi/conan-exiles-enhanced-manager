@@ -4,7 +4,8 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
-from tkinter import messagebox
+import threading
+from tkinter import messagebox, simpledialog
 import webbrowser
 
 import customtkinter as ctk
@@ -25,6 +26,7 @@ from ..core.hosted_service import (
     test_remote_connection,
 )
 from ..core.lazy_tabs import LazyTabController
+from ..core.local_mod_library import LocalModLibraryStore, component_to_active_entry
 from ..core.logging_service import setup_logging
 from ..core.mod_profile_store import ModProfileStore
 from ..core.modlist_service import (
@@ -39,13 +41,35 @@ from ..core.modlist_service import (
 from ..core.profile_store import ProfileStore
 from ..core.profile_warnings import profile_entry_warnings
 from ..core.profile_diff import render_profile_modlist_diff
+from ..core.release_guidance import (
+    first_run_guidance,
+    steamcmd_may_need_account,
+    steamcmd_setup_guidance,
+    workshop_download_failure_summary,
+)
 from ..core.server_config import read_server_config
+from ..core.server_config_editor import (
+    ServerConfigEdit,
+    ServerConfigEditPlan,
+    apply_server_config_edit_plan,
+    build_server_config_edit_plan,
+    config_preview_text,
+)
 from ..core.server_launcher import launch_dedicated_server
 from ..core.server_logs import read_server_log_snapshot
 from ..core.server_process import ServerProcessService
 from ..core.support_diagnostics import SupportDiagnosticsService
 from ..core.snapshot_service import list_snapshots, restore_snapshot_record, validate_snapshot_record
 from ..core.startup import startup_message
+from ..core.steamcmd_workshop import (
+    SteamCmdProgress,
+    detect_steamcmd_path,
+    downloaded_workshop_ids,
+    missing_workshop_ids,
+    run_workshop_download,
+    steamcmd_workshop_root,
+    validate_steamcmd_path,
+)
 from ..core.update_checker import ReleaseInfo, check_for_update
 from ..core.vanilla_restore import apply_vanilla_restore, build_vanilla_restore_plans, preview_vanilla_restore_text
 from ..core.workshop_cache import WorkshopCache
@@ -120,6 +144,9 @@ class AppWindow(ctk.CTk):
         self.server_profiles: list[ServerProfile] = []
         self.banner_state = BannerState()
         self.workshop_scan_cancel_requested = False
+        self.workshop_download_status = ""
+        self._steamcmd_cancel_event: threading.Event | None = None
+        self._steamcmd_thread: threading.Thread | None = None
         self.server_runtime = ServerRuntimeState()
         self.status_text = startup_message("shell")
         self.last_action = ""
@@ -146,6 +173,7 @@ class AppWindow(ctk.CTk):
         self.diagnostics = SupportDiagnosticsService()
         self.mod_profiles = ModProfileStore(self.paths.data_dir or DEFAULT_DATA_DIR)
         self.active_mods = self.mod_profiles.list_entries()
+        self.mod_library = LocalModLibraryStore(self.paths.data_dir or DEFAULT_DATA_DIR)
         self.profile_store = ProfileStore(self.paths.data_dir or DEFAULT_DATA_DIR)
         self.named_mod_profiles = self.profile_store.list_mod_profiles()
         self.server_profiles = self.profile_store.list_server_profiles()
@@ -156,6 +184,10 @@ class AppWindow(ctk.CTk):
         self.hosted_store = HostedProfileStore(self.paths.data_dir or DEFAULT_DATA_DIR)
         self.hosted_profiles = self.hosted_store.list_profiles()
         self.server_process = ServerProcessService()
+        if not self.preferences.steamcmd_path:
+            detected_steamcmd = detect_steamcmd_path(self.paths.data_dir or DEFAULT_DATA_DIR)
+            if detected_steamcmd:
+                self.preferences.steamcmd_path = str(detected_steamcmd)
 
     def _load_settings(self) -> ConanAppPaths:
         data = read_json(SETTINGS_FILE)
@@ -166,7 +198,8 @@ class AppWindow(ctk.CTk):
         self.status_text = startup_message("discovery")
         self.show_banner("info", self.status_text)
         self.refresh_discovery()
-        self.show_banner("success", startup_message("ready"))
+        guidance = first_run_guidance(self.paths, steamcmd_path=self.resolved_steamcmd_path())
+        self.show_banner("warning" if guidance else "success", guidance[0] if guidance else startup_message("ready"))
         if self.preferences.auto_check_updates:
             self.check_for_updates(show_no_update=False)
 
@@ -197,6 +230,12 @@ class AppWindow(ctk.CTk):
                 "paths": self.paths.to_dict(),
             },
         )
+
+    def resolved_steamcmd_path(self) -> Path | None:
+        configured = self.preferences.steamcmd_path
+        if configured and validate_steamcmd_path(configured).ok:
+            return Path(configured)
+        return detect_steamcmd_path(self.paths.data_dir or DEFAULT_DATA_DIR)
 
     def save_active_mods(self) -> None:
         self.mod_profiles.save(self.active_mods)
@@ -406,6 +445,9 @@ class AppWindow(ctk.CTk):
             backup_root=self.paths.backup_dir or DEFAULT_BACKUP_DIR,
             hosted_profiles=self.hosted_profiles,
             activity_records=self.activity_records(limit=20),
+            active_mods=self.active_mods,
+            workshop_items=self.workshop_items,
+            steamcmd_path=self.resolved_steamcmd_path(),
         )
         self.clipboard_clear()
         self.clipboard_append(report)
@@ -508,24 +550,102 @@ class AppWindow(ctk.CTk):
         self._show_vanilla_restore_preview(plans)
 
     def add_local_pak_paths(self, pak_paths: list[Path]) -> int:
-        existing = {_entry_key(entry.value) for entry in self.active_mods}
+        components = self.mod_library.import_pak_files(pak_paths)
         added = 0
-        for pak_path in pak_paths:
-            if pak_path.suffix.casefold() != ".pak":
-                continue
-            entry = active_entry_from_pak(pak_path)
-            key = _entry_key(entry.value)
-            if key in existing:
-                continue
-            self.active_mods.append(entry)
-            existing.add(key)
-            added += 1
+        for component in components:
+            if self._add_component_to_active(component.component_id, refresh=False, quiet=True):
+                added += 1
         self.save_active_mods()
-        self.last_action = f"Added {added} local pak mod(s)."
+        self.last_action = f"Imported {len(components)} local mod(s); added {added} to Active Load Order."
         self.status_text = self.last_action
         self.show_banner("success" if added else "info", self.last_action)
+        if components:
+            self.record_activity("local mod import", "completed", target="library", details=f"{len(components)} mod(s)")
         self._refresh_main_tabs()
         return added
+
+    def import_local_mod_files(self, paths: list[Path], *, link_external: bool = False) -> int:
+        components = self.mod_library.import_pak_files(paths, link_external=link_external)
+        mode = "linked" if link_external else "imported"
+        self.last_action = f"{mode.title()} {len(components)} local mod(s) into the library."
+        self.status_text = self.last_action
+        self.show_banner("success" if components else "info", self.last_action)
+        if components:
+            self.record_activity("local mod import", "completed", target="library", details=f"{mode} {len(components)}")
+        self._refresh_main_tabs()
+        return len(components)
+
+    def import_archive_paths(self, archive_paths: list[Path]) -> int:
+        imported = 0
+        warnings: list[str] = []
+        for archive_path in archive_paths:
+            try:
+                components = self.mod_library.import_archive(archive_path)
+            except ValueError as exc:
+                warnings.append(f"{archive_path.name}: {exc}")
+                continue
+            imported += len(components)
+        self.last_action = f"Imported {imported} archive mod component(s)."
+        self.status_text = self.last_action
+        self.show_banner("success" if imported else "warning", self.last_action)
+        if imported:
+            self.record_activity("archive import", "completed", target="library", details=f"{imported} component(s)")
+        self._refresh_main_tabs()
+        if warnings:
+            self.notify_warning("Archive Needs Review", "\n".join(warnings))
+        return imported
+
+    def import_archive_path(self, archive_path: Path, *, selected_component_ids: list[str] | None = None) -> int:
+        components = self.mod_library.import_archive(archive_path, selected_component_ids=selected_component_ids)
+        self.last_action = f"Imported {len(components)} component(s) from {archive_path.name}."
+        self.status_text = self.last_action
+        self.show_banner("success" if components else "info", self.last_action)
+        if components:
+            self.record_activity("archive import", "completed", target="library", details=archive_path.name)
+        self._refresh_main_tabs()
+        return len(components)
+
+    def add_library_component_to_active(self, component_id: str) -> bool:
+        return self._add_component_to_active(component_id, refresh=True, quiet=False)
+
+    def _add_component_to_active(self, component_id: str, *, refresh: bool, quiet: bool) -> bool:
+        component = self.mod_library.component_by_id(component_id)
+        if component is None:
+            if not quiet:
+                self.notify_warning("Library Mod Missing", "The selected library component no longer exists.")
+            return False
+        entry = component_to_active_entry(component)
+        existing = {_entry_key(active.value) for active in self.active_mods}
+        if _entry_key(entry.value) in existing:
+            if not quiet:
+                self.notify_info("Already Active", "That mod is already in Active Load Order.")
+            return False
+        self.active_mods.append(entry)
+        self.save_active_mods()
+        self.last_action = f"Added {entry.display_name or entry.value} to Active Load Order."
+        self.status_text = self.last_action
+        if not quiet:
+            self.show_banner("success", self.last_action)
+        if refresh:
+            self._refresh_main_tabs(selected_mod_index=len(self.active_mods) - 1)
+        return True
+
+    def set_active_mod_enabled(self, index: int, enabled: bool) -> None:
+        if 0 <= index < len(self.active_mods):
+            entry = self.active_mods[index]
+            entry.enabled = enabled
+            self.save_active_mods()
+            state = "enabled" if enabled else "disabled"
+            self.last_action = f"{state.title()} {entry.display_name or entry.value} in Active Load Order."
+            self.status_text = self.last_action
+            self.show_banner("info", self.last_action)
+            self._refresh_main_tabs(selected_mod_index=index)
+
+    def library_components(self):
+        return self.mod_library.list_components()
+
+    def library_sources(self):
+        return self.mod_library.list_sources()
 
     def add_workshop_ids_from_text(self, text: str) -> tuple[int, list[str]]:
         self._ensure_workshop_services()
@@ -548,7 +668,7 @@ class AppWindow(ctk.CTk):
             self.status_text = "Workshop scan canceled."
             self.show_banner("warning", self.status_text)
             return 0
-        self.workshop_items = self.workshop.scan(self.paths.workshop_content_dir)
+        self.workshop_items = self.workshop.scan_roots(self._workshop_scan_roots())
         self.last_action = f"Scanned {len(self.workshop_items)} Workshop item(s)."
         self.status_text = self.last_action
         self.show_banner("success", self.last_action)
@@ -559,6 +679,131 @@ class AppWindow(ctk.CTk):
         self.workshop_scan_cancel_requested = True
         self.status_text = "Workshop scan cancel requested."
         self.show_banner("warning", self.status_text)
+
+    def download_missing_workshop_items(self) -> None:
+        self._ensure_workshop_services()
+        self._start_workshop_steamcmd(missing_workshop_ids(self.workshop_items), action_label="Download Missing")
+
+    def update_selected_workshop_item(self, workshop_id: str) -> None:
+        self._start_workshop_steamcmd([workshop_id], action_label="Update Selected")
+
+    def update_all_downloaded_workshop_items(self) -> None:
+        self._ensure_workshop_services()
+        self._start_workshop_steamcmd(downloaded_workshop_ids(self.workshop_items), action_label="Update All Downloaded")
+
+    def cancel_workshop_steamcmd(self) -> None:
+        if self._steamcmd_cancel_event is not None:
+            self._steamcmd_cancel_event.set()
+            self.workshop_download_status = "SteamCMD cancel requested..."
+            self.show_banner("warning", self.workshop_download_status)
+            self._refresh_main_tabs()
+
+    def workshop_steamcmd_running(self) -> bool:
+        return bool(self._steamcmd_thread and self._steamcmd_thread.is_alive())
+
+    def _start_workshop_steamcmd(self, workshop_ids: list[str], *, action_label: str, use_account: bool = False) -> None:
+        self._ensure_workshop_services()
+        ids = [workshop_id for workshop_id in dict.fromkeys(str(value).strip() for value in workshop_ids) if workshop_id]
+        if not ids:
+            self.notify_info("No Workshop Items", "No Workshop items matched that action.")
+            return
+        if self.workshop_steamcmd_running():
+            self.notify_warning("SteamCMD Busy", "A SteamCMD Workshop task is already running.")
+            return
+        steamcmd_path = self.resolved_steamcmd_path()
+        status = validate_steamcmd_path(steamcmd_path)
+        if not status.ok or status.path is None:
+            self.notify_warning("SteamCMD Not Configured", steamcmd_setup_guidance(status.message))
+            return
+        account_label = " with Steam account" if use_account and self.preferences.steamcmd_username else ""
+        self.workshop_download_status = f"{action_label}: starting SteamCMD{account_label} for {len(ids)} item(s)..."
+        self.show_banner("info", self.workshop_download_status)
+        self._steamcmd_cancel_event = threading.Event()
+
+        def _progress(progress: SteamCmdProgress) -> None:
+            message = progress.message or self.workshop_download_status
+            self.after(0, lambda: self._set_workshop_download_status(message))
+
+        def _worker() -> None:
+            result = run_workshop_download(
+                status.path,
+                ids,
+                username=self.preferences.steamcmd_username if use_account else "",
+                progress_callback=_progress,
+                cancel_event=self._steamcmd_cancel_event,
+            )
+            self.after(
+                0,
+                lambda: self._finish_workshop_steamcmd(
+                    action_label,
+                    ids,
+                    result.ok,
+                    result.canceled,
+                    result.error or result.output_text,
+                    used_account=use_account,
+                ),
+            )
+
+        self._steamcmd_thread = threading.Thread(target=_worker, daemon=True)
+        self._steamcmd_thread.start()
+        self._refresh_main_tabs()
+
+    def _set_workshop_download_status(self, message: str) -> None:
+        self.workshop_download_status = message
+        self.show_banner("info", message)
+        if hasattr(self, "workshop_tab"):
+            self.workshop_tab.refresh()
+
+    def _finish_workshop_steamcmd(
+        self,
+        action_label: str,
+        workshop_ids: list[str],
+        ok: bool,
+        canceled: bool,
+        output_text: str,
+        used_account: bool = False,
+    ) -> None:
+        self._ensure_workshop_services()
+        if ok:
+            self.workshop.add_ids(workshop_ids, self.paths.workshop_content_dir)
+            self.workshop_items = self.workshop.scan_roots(self._workshop_scan_roots())
+            self.last_action = f"{action_label} complete for {len(workshop_ids)} Workshop item(s)."
+            self.status_text = self.last_action
+            self.workshop_download_status = self.last_action
+            self.show_banner("success", self.last_action)
+            self.record_activity("workshop steamcmd", "completed", target=", ".join(workshop_ids), details=action_label)
+        elif canceled:
+            self.last_action = f"{action_label} canceled."
+            self.status_text = self.last_action
+            self.workshop_download_status = self.last_action
+            self.show_banner("warning", self.last_action)
+            self.record_activity("workshop steamcmd", "canceled", target=", ".join(workshop_ids), details=action_label)
+        else:
+            summary = workshop_download_failure_summary(output_text)
+            self.last_action = f"{action_label} failed: {summary}"
+            self.status_text = self.last_action
+            self.workshop_download_status = self.last_action
+            self.show_banner("error", self.last_action)
+            self.record_activity("workshop steamcmd", "failed", target=", ".join(workshop_ids), details=summary)
+            if steamcmd_may_need_account(output_text) and not used_account:
+                username = self.preferences.steamcmd_username or simpledialog.askstring(
+                    "Steam Account Optional",
+                    "SteamCMD reported a login or ownership issue. Enter a Steam username for a retry, or leave blank to keep anonymous-only mode. Passwords are never saved.",
+                    parent=self,
+                )
+                if username:
+                    self.preferences.steamcmd_username = username.strip()
+                    self.save_settings()
+                    self._steamcmd_cancel_event = None
+                    self._start_workshop_steamcmd(
+                        workshop_ids,
+                        action_label=f"{action_label} Account Retry",
+                        use_account=True,
+                    )
+                    return
+            self.notify_warning("SteamCMD Workshop Failed", self.last_action)
+        self._steamcmd_cancel_event = None
+        self._refresh_main_tabs()
 
     def add_workshop_item_to_active(self, workshop_id: str) -> bool:
         self._ensure_workshop_services()
@@ -593,6 +838,13 @@ class AppWindow(ctk.CTk):
         self.status_text = self.last_action
         self._refresh_main_tabs()
         return len(ids)
+
+    def _workshop_scan_roots(self) -> list[Path | None]:
+        roots = [self.paths.workshop_content_dir]
+        extra = steamcmd_workshop_root(self.resolved_steamcmd_path())
+        if extra and extra not in roots:
+            roots.append(extra)
+        return roots
 
     def replace_active_mods_from_modlist(self, modlist_path: Path) -> int:
         entries = active_entries_from_modlist(modlist_path)
@@ -663,6 +915,14 @@ class AppWindow(ctk.CTk):
 
     def dedicated_server_log_snapshot(self) -> ServerLogSnapshot:
         return read_server_log_snapshot(self.paths)
+
+    def preview_server_config_edit(self, edit: ServerConfigEdit) -> None:
+        plan = build_server_config_edit_plan(
+            self.paths,
+            edit,
+            process_status=self.dedicated_server_status(),
+        )
+        self._show_server_config_preview(plan)
 
     def launch_dedicated_server_from_ui(self) -> None:
         result = launch_dedicated_server(
@@ -769,6 +1029,77 @@ class AppWindow(ctk.CTk):
             os.startfile(path)  # type: ignore[attr-defined]
         except AttributeError:
             webbrowser.open(path.as_uri())
+
+    def _show_server_config_preview(self, plan: ServerConfigEditPlan) -> None:
+        window = ctk.CTkToplevel(self)
+        window.title("Preview Server Config Changes")
+        window.geometry("920x660")
+        window.minsize(760, 500)
+        window.grid_columnconfigure(0, weight=1)
+        window.grid_rowconfigure(1, weight=1)
+        ctk.CTkLabel(
+            window,
+            text="Preview Server Config Changes",
+            font=self.ui_font("title"),
+            text_color="#f1e7d0",
+        ).grid(row=0, column=0, sticky="w", padx=14, pady=(14, 6))
+        text = ctk.CTkTextbox(
+            window,
+            font=self.ui_font("mono"),
+            fg_color="#101010",
+            text_color="#f1e7d0",
+            border_width=1,
+            border_color="#3a3028",
+            wrap="none",
+        )
+        text.grid(row=1, column=0, sticky="nsew", padx=14, pady=8)
+        text.insert("1.0", config_preview_text(plan))
+        text.configure(state="disabled")
+        controls = ctk.CTkFrame(window, fg_color="transparent")
+        controls.grid(row=2, column=0, sticky="e", padx=14, pady=(4, 14))
+        ctk.CTkButton(
+            controls,
+            text="Cancel",
+            width=100,
+            height=self.ui_tokens.compact_button_height,
+            fg_color="#3a3028",
+            hover_color="#4a3c31",
+            command=window.destroy,
+        ).grid(row=0, column=0, padx=(0, 8))
+        ctk.CTkButton(
+            controls,
+            text="Apply Config",
+            width=130,
+            height=self.ui_tokens.compact_button_height,
+            fg_color="#7d4429",
+            hover_color="#925333",
+            state="normal" if plan.has_changes else "disabled",
+            command=lambda: self._apply_server_config_edit(plan, window),
+        ).grid(row=0, column=1)
+        window.transient(self)
+        window.grab_set()
+
+    def _apply_server_config_edit(self, plan: ServerConfigEditPlan, window: ctk.CTkToplevel) -> None:
+        if not plan.has_changes:
+            self.notify_info("No Config Changes", "No server config changes were staged.")
+            return
+        result = apply_server_config_edit_plan(plan, self.backup)
+        self.server_runtime.mark_restart_recommended("Dedicated Server config changed.")
+        self.last_action = (
+            f"Wrote {len(result.written_paths)} config file(s); "
+            f"created {len(result.backup_records)} backup(s)."
+        )
+        self.status_text = self.last_action
+        self.show_banner("success", self.last_action)
+        self.record_activity(
+            "server config edit",
+            "completed",
+            target="dedicated",
+            details=f"{len(result.written_paths)} file(s), {len(result.backup_records)} backup(s)",
+        )
+        window.destroy()
+        self.notify_info("Server Config Applied", self.last_action)
+        self._refresh_main_tabs()
 
     def _show_apply_preview(self, plans: list[ModlistTargetPlan]) -> None:
         window = ctk.CTkToplevel(self)
@@ -1085,6 +1416,7 @@ class AppWindow(ctk.CTk):
             self.server_runtime.mark_restart_recommended("Dedicated Server modlist changed.")
         self.last_action = (
             f"Wrote {len(result.written_paths)} modlist file(s); "
+            f"copied {len(result.copied_paths)} mod file(s); "
             f"created {len(result.backup_ids)} backup(s)."
         )
         self.status_text = self.last_action
@@ -1148,6 +1480,20 @@ def _preview_text(plans: list[ModlistTargetPlan]) -> str:
         ]
         if plan.warnings:
             lines.extend(["", "Warnings:", *plan.warnings])
+        if plan.file_copies:
+            lines.extend(
+                [
+                    "",
+                    "Target file copies:",
+                    *[
+                        (
+                            f"{copy_plan.source_path} -> {copy_plan.target_path}"
+                            f" {'(backup existing first)' if copy_plan.backup_needed else ''}"
+                        )
+                        for copy_plan in plan.file_copies
+                    ],
+                ]
+            )
         sections.append("\n".join(lines))
     return "\n\n" + ("-" * 72 + "\n\n").join(sections)
 

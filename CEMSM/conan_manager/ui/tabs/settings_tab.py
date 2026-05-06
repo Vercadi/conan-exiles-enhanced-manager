@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import tkinter as tk
+from tkinter import filedialog
 
 import customtkinter as ctk
 
@@ -32,6 +33,8 @@ class SettingsTab(ctk.CTkFrame):
         )
         self._result_popups_var = tk.BooleanVar(value=app.preferences.show_result_popups)
         self._auto_updates_var = tk.BooleanVar(value=app.preferences.auto_check_updates)
+        self._steamcmd_path_var = ctk.StringVar(value=app.preferences.steamcmd_path)
+        self._steamcmd_username_var = ctk.StringVar(value=app.preferences.steamcmd_username)
         self._build()
         self.refresh()
 
@@ -101,7 +104,29 @@ class SettingsTab(ctk.CTkFrame):
             justify="left",
         ).grid(row=5, column=0, columnspan=2, sticky="ew", padx=12, pady=(8, 12))
 
-        storage = self._card(body, 3, "Storage")
+        steamcmd = self._card(body, 3, "SteamCMD")
+        steamcmd.grid_columnconfigure(1, weight=1)
+        self._entry_row(
+            steamcmd,
+            1,
+            "steamcmd.exe",
+            self._steamcmd_path_var,
+            browse_command=self._browse_steamcmd,
+        )
+        self._entry_row(steamcmd, 2, "Steam username", self._steamcmd_username_var)
+        ctk.CTkLabel(
+            steamcmd,
+            text=(
+                "Workshop downloads use anonymous login first. A username is optional for cases where SteamCMD "
+                "requires an account; passwords are never saved by this app."
+            ),
+            font=self.app.ui_font("small"),
+            text_color="#b9aa92",
+            wraplength=self.app.ui_tokens.panel_wrap,
+            justify="left",
+        ).grid(row=3, column=0, columnspan=3, sticky="ew", padx=12, pady=(8, 12))
+
+        storage = self._card(body, 4, "Storage")
         self._value_row(storage, 1, "Data", str(self.app.paths.data_dir or "Not configured"))
         self._value_row(storage, 2, "Backups", str(self.app.paths.backup_dir or "Not configured"))
         storage_actions = ctk.CTkFrame(storage, fg_color="transparent")
@@ -115,7 +140,7 @@ class SettingsTab(ctk.CTkFrame):
         )
 
         actions = ctk.CTkFrame(body, fg_color="transparent")
-        actions.grid(row=4, column=0, sticky="ew", padx=8, pady=(4, 0))
+        actions.grid(row=5, column=0, sticky="ew", padx=8, pady=(4, 0))
         actions.grid_columnconfigure(0, weight=1)
         self._result_label = ctk.CTkLabel(
             actions,
@@ -192,6 +217,35 @@ class SettingsTab(ctk.CTkFrame):
             anchor="w",
         ).grid(row=row, column=1, sticky="ew", padx=12, pady=6)
 
+    def _entry_row(self, card, row: int, label: str, variable, *, browse_command=None) -> None:
+        ctk.CTkLabel(card, text=label, font=self.app.ui_font("body"), text_color="#b9aa92").grid(
+            row=row,
+            column=0,
+            sticky="w",
+            padx=12,
+            pady=4,
+        )
+        ctk.CTkEntry(
+            card,
+            textvariable=variable,
+            height=self.app.ui_tokens.compact_button_height,
+            font=self.app.ui_font("body"),
+            fg_color="#101010",
+            border_color="#3a3028",
+            text_color="#f1e7d0",
+        ).grid(row=row, column=1, sticky="ew", padx=12, pady=4)
+        if browse_command:
+            ctk.CTkButton(
+                card,
+                text="Browse",
+                width=90,
+                height=self.app.ui_tokens.compact_button_height,
+                font=self.app.ui_font("body"),
+                fg_color="#3a3028",
+                hover_color="#4a3c31",
+                command=browse_command,
+            ).grid(row=row, column=2, sticky="e", padx=(0, 12), pady=4)
+
     def _value_row(self, card, row: int, label: str, value: str) -> None:
         ctk.CTkLabel(card, text=label, font=self.app.ui_font("body"), text_color="#b9aa92").grid(
             row=row,
@@ -230,8 +284,18 @@ class SettingsTab(ctk.CTkFrame):
         )
         self._result_popups_var.set(preferences.show_result_popups)
         self._auto_updates_var.set(preferences.auto_check_updates)
+        self._steamcmd_path_var.set(preferences.steamcmd_path)
+        self._steamcmd_username_var.set(preferences.steamcmd_username)
         if hasattr(self, "_result_label"):
             self._result_label.configure(text="Current settings are loaded.")
+
+    def _browse_steamcmd(self) -> None:
+        path = filedialog.askopenfilename(
+            title="Select steamcmd.exe",
+            filetypes=[("SteamCMD", "steamcmd.exe"), ("Executables", "*.exe"), ("All files", "*.*")],
+        )
+        if path:
+            self._steamcmd_path_var.set(path)
 
     def _save(self) -> None:
         preferences = AppPreferences(
@@ -240,6 +304,8 @@ class SettingsTab(ctk.CTkFrame):
             confirmation_mode=CONFIRMATION_LABELS.get(self._confirmation_var.get(), "destructive_only"),
             show_result_popups=bool(self._result_popups_var.get()),
             auto_check_updates=bool(self._auto_updates_var.get()),
+            steamcmd_path=self._steamcmd_path_var.get(),
+            steamcmd_username=self._steamcmd_username_var.get(),
         ).normalized()
         self.app.update_preferences(preferences)
         self._result_label.configure(text="Saved. Restart to fully refresh any already-open tab sizing.")
@@ -251,4 +317,3 @@ def _label_for_value(mapping: dict[str, str], value: str, fallback: str) -> str:
         if mapped == value:
             return label
     return fallback
-

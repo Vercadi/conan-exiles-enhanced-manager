@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import shutil
 from pathlib import Path
 
 from ..models.app_paths import ConanAppPaths
@@ -15,6 +16,7 @@ from ..models.modlist import (
     ModlistEntry,
     ModlistParity,
     ModlistTargetPlan,
+    TargetFileCopy,
     display_name_from_value,
     normalize_modlist_value,
 )
@@ -81,6 +83,8 @@ def active_entries_from_modlist(path: Path) -> list[ActiveModEntry]:
 def missing_entries(entries: list[ActiveModEntry | ModlistEntry], base_dir: Path | None = None) -> list[str]:
     missing: list[str] = []
     for entry in entries:
+        if isinstance(entry, ActiveModEntry) and not entry.enabled:
+            continue
         value = entry.normalized_value
         if not value:
             continue
@@ -128,6 +132,7 @@ def build_apply_plans(
     entries: list[ActiveModEntry],
 ) -> list[ModlistTargetPlan]:
     plans: list[ModlistTargetPlan] = []
+    active_entries = [entry for entry in entries if entry.enabled]
     targets = _expand_targets(target)
     for target_value in targets:
         mods_dir = _mods_dir_for_target(paths, target_value)
@@ -140,13 +145,13 @@ def build_apply_plans(
                     label=label,
                     mods_dir=Path(),
                     modlist_path=Path(),
-                    proposed_entries=list(entries),
+                    proposed_entries=list(active_entries),
                     warnings=[f"{label} path is not configured."],
                 )
             )
             continue
         current_entries = read_modlist(modlist_path)
-        warnings = [f"Missing pak: {value}" for value in missing_entries(entries, mods_dir)]
+        target_values, file_copies, warnings = _target_modlist_values_and_copies(active_entries, mods_dir)
         plans.append(
             ModlistTargetPlan(
                 target=target_value,
@@ -154,7 +159,9 @@ def build_apply_plans(
                 mods_dir=mods_dir,
                 modlist_path=modlist_path,
                 current_entries=current_entries,
-                proposed_entries=list(entries),
+                proposed_entries=list(active_entries),
+                target_modlist_values=target_values,
+                file_copies=file_copies,
                 warnings=warnings,
             )
         )
@@ -169,6 +176,24 @@ def apply_modlist_plans(plans: list[ModlistTargetPlan], backup: BackupManager) -
             continue
 
         ensure_dir(plan.mods_dir)
+        for copy_plan in _dedupe_file_copies(plan.file_copies):
+            if not copy_plan.source_path.is_file():
+                result.warnings.append(f"Missing source file: {copy_plan.source_path}")
+                continue
+            if _same_file_path(copy_plan.source_path, copy_plan.target_path):
+                continue
+            ensure_dir(copy_plan.target_path.parent)
+            if copy_plan.target_path.is_file():
+                record = backup.backup_file(
+                    copy_plan.target_path,
+                    category="mods",
+                    description=f"{plan.label} mod file backup before overwrite",
+                )
+                if record:
+                    result.backup_ids.append(record.backup_id)
+            shutil.copy2(copy_plan.source_path, copy_plan.target_path)
+            result.copied_paths.append(copy_plan.target_path)
+
         if plan.modlist_path.is_file():
             record = backup.backup_file(
                 plan.modlist_path,
@@ -178,7 +203,7 @@ def apply_modlist_plans(plans: list[ModlistTargetPlan], backup: BackupManager) -
             if record:
                 result.backup_ids.append(record.backup_id)
 
-        text = render_modlist_text(plan.proposed_entries)
+        text = render_modlist_values(plan.proposed_values)
         plan.modlist_path.write_text(text, encoding="utf-8")
         result.written_paths.append(plan.modlist_path)
         result.warnings.extend(plan.warnings)
@@ -187,7 +212,12 @@ def apply_modlist_plans(plans: list[ModlistTargetPlan], backup: BackupManager) -
 
 
 def render_modlist_text(entries: list[ActiveModEntry]) -> str:
-    values = [entry.normalized_value for entry in entries if entry.normalized_value]
+    values = [entry.normalized_value for entry in entries if entry.enabled and entry.normalized_value]
+    return render_modlist_values(values)
+
+
+def render_modlist_values(values: list[str]) -> str:
+    values = [normalize_modlist_value(value) for value in values if normalize_modlist_value(value)]
     return "\n".join(values) + ("\n" if values else "")
 
 
@@ -216,6 +246,58 @@ def resolve_entry_path(value: str, base_dir: Path | None = None) -> Path | None:
     if base_dir:
         return base_dir / candidate
     return candidate
+
+
+def _target_modlist_values_and_copies(
+    entries: list[ActiveModEntry],
+    mods_dir: Path,
+) -> tuple[list[str], list[TargetFileCopy], list[str]]:
+    values: list[str] = []
+    copies: list[TargetFileCopy] = []
+    warnings: list[str] = []
+    for entry in entries:
+        value = entry.normalized_value
+        if not value:
+            continue
+        if entry.requires_target_copy:
+            source = resolve_entry_path(value)
+            if source is None or not source.is_file():
+                warnings.append(f"Missing pak: {value}")
+                continue
+            target = mods_dir / source.name
+            copies.append(TargetFileCopy(source_path=source, target_path=target))
+            values.append(target.name)
+            for companion_value in entry.companion_paths:
+                companion = resolve_entry_path(companion_value)
+                if companion is None or not companion.is_file():
+                    warnings.append(f"Missing companion file: {companion_value}")
+                    continue
+                copies.append(TargetFileCopy(source_path=companion, target_path=mods_dir / companion.name))
+        else:
+            values.append(value)
+            resolved = resolve_entry_path(value, mods_dir)
+            if resolved is None or not resolved.is_file():
+                warnings.append(f"Missing pak: {value}")
+    return values, copies, warnings
+
+
+def _dedupe_file_copies(copies: list[TargetFileCopy]) -> list[TargetFileCopy]:
+    seen: set[str] = set()
+    deduped: list[TargetFileCopy] = []
+    for copy_plan in copies:
+        key = str(copy_plan.target_path).replace("\\", "/").casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(copy_plan)
+    return deduped
+
+
+def _same_file_path(left: Path, right: Path) -> bool:
+    try:
+        return left.resolve() == right.resolve()
+    except OSError:
+        return str(left).replace("\\", "/").casefold() == str(right).replace("\\", "/").casefold()
 
 
 def _expand_targets(target: str) -> list[str]:

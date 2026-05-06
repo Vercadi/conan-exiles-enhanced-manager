@@ -17,9 +17,9 @@ from ...models.workshop import (
 
 STATUS_LABELS = {
     WORKSHOP_STATUS_DOWNLOADED: "Downloaded",
-    WORKSHOP_STATUS_MISSING: "Missing",
-    WORKSHOP_STATUS_NO_PAK: "No .pak",
-    WORKSHOP_STATUS_DUPLICATE_PAK: "Multiple .pak",
+    WORKSHOP_STATUS_MISSING: "Missing download",
+    WORKSHOP_STATUS_NO_PAK: "No pak",
+    WORKSHOP_STATUS_DUPLICATE_PAK: "Multiple pak",
 }
 
 
@@ -71,6 +71,10 @@ class WorkshopTab(ctk.CTkFrame):
         self._button(buttons, "Add IDs", self._add_ids, row=0)
         self._scan_button = self._button(buttons, "Scan Workshop", self._scan, row=1)
         self._button(buttons, "Cancel Scan", self.app.cancel_workshop_scan, row=2)
+        self._download_missing_button = self._button(buttons, "Download Missing", self._download_missing, row=3)
+        self._update_all_button = self._button(buttons, "Update Downloaded", self._update_all_downloaded, row=4)
+        self._cancel_steamcmd_button = self._button(buttons, "Cancel SteamCMD", self.app.cancel_workshop_steamcmd, row=5)
+        self._button(buttons, "SteamCMD Settings", lambda: self.app.select_tab("Settings"), row=6)
 
         list_frame = ctk.CTkFrame(self, fg_color="#191715", border_width=1, border_color="#3a3028")
         list_frame.grid(row=2, column=0, sticky="nsew", padx=10, pady=6)
@@ -117,6 +121,16 @@ class WorkshopTab(ctk.CTkFrame):
         ).grid(row=0, column=1, padx=(8, 8))
         ctk.CTkButton(
             footer,
+            text="Update Selected",
+            width=145,
+            height=self.app.ui_tokens.compact_button_height,
+            font=self.app.ui_font("body"),
+            fg_color="#3a3028",
+            hover_color="#4a3c31",
+            command=self._update_selected,
+        ).grid(row=0, column=2, padx=(0, 8))
+        ctk.CTkButton(
+            footer,
             text="Copy Active IDs",
             width=140,
             height=self.app.ui_tokens.compact_button_height,
@@ -124,7 +138,7 @@ class WorkshopTab(ctk.CTkFrame):
             fg_color="#3a3028",
             hover_color="#4a3c31",
             command=self._copy_active_ids,
-        ).grid(row=0, column=2)
+        ).grid(row=0, column=3)
 
     def _button(self, parent, text: str, command, *, row: int) -> ctk.CTkButton:
         button = ctk.CTkButton(
@@ -152,7 +166,16 @@ class WorkshopTab(ctk.CTkFrame):
             self._selected_index = None
         old_warnings = self.app.old_mod_warnings()[:3]
         suffix = (" | " + "; ".join(old_warnings)) if old_warnings else ""
-        self._status_label.configure(text=f"{len(items)} Workshop item(s) cached. Downloads are not managed here.{suffix}")
+        steamcmd_status = f" | {self.app.workshop_download_status}" if self.app.workshop_download_status else ""
+        if not self.app.resolved_steamcmd_path():
+            steamcmd_status = " | SteamCMD not configured: open SteamCMD Settings before downloading"
+        self._status_label.configure(
+            text=f"{len(items)} Workshop item(s) cached. Local downloads are scanned and explicit.{steamcmd_status}{suffix}"
+        )
+        busy = self.app.workshop_steamcmd_running()
+        self._download_missing_button.configure(state="disabled" if busy else "normal")
+        self._update_all_button.configure(state="disabled" if busy else "normal")
+        self._cancel_steamcmd_button.configure(state="normal" if busy else "disabled")
         self._refresh_detail()
 
     def _on_select(self, _event=None) -> None:
@@ -208,6 +231,18 @@ class WorkshopTab(ctk.CTkFrame):
         if item is None:
             return
         self.app.add_workshop_item_to_active(item.workshop_id)
+
+    def _download_missing(self) -> None:
+        self.app.download_missing_workshop_items()
+
+    def _update_selected(self) -> None:
+        item = self._selected_item()
+        if item is None:
+            return
+        self.app.update_selected_workshop_item(item.workshop_id)
+
+    def _update_all_downloaded(self) -> None:
+        self.app.update_all_downloaded_workshop_items()
 
     def _copy_active_ids(self) -> None:
         count = self.app.copy_ordered_workshop_ids()

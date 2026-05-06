@@ -15,6 +15,8 @@ class AppPreferences:
     confirmation_mode: str = "destructive_only"
     show_result_popups: bool = True
     auto_check_updates: bool = False
+    steamcmd_path: str = ""
+    steamcmd_username: str = ""
 
     def normalized(self) -> "AppPreferences":
         confirmation_mode = (
@@ -28,6 +30,8 @@ class AppPreferences:
             confirmation_mode=confirmation_mode,
             show_result_popups=bool(self.show_result_popups),
             auto_check_updates=bool(self.auto_check_updates),
+            steamcmd_path=str(self.steamcmd_path or "").strip(),
+            steamcmd_username=str(self.steamcmd_username or "").strip(),
         )
 
     def to_dict(self) -> dict:
@@ -38,6 +42,8 @@ class AppPreferences:
             "confirmation_mode": normalized.confirmation_mode,
             "show_result_popups": normalized.show_result_popups,
             "auto_check_updates": normalized.auto_check_updates,
+            "steamcmd_path": normalized.steamcmd_path,
+            "steamcmd_username": normalized.steamcmd_username,
         }
 
     @classmethod
@@ -50,4 +56,6 @@ class AppPreferences:
             confirmation_mode=str(data.get("confirmation_mode") or "destructive_only"),
             show_result_popups=bool(data.get("show_result_popups", True)),
             auto_check_updates=bool(data.get("auto_check_updates", False)),
+            steamcmd_path=str(data.get("steamcmd_path") or ""),
+            steamcmd_username=str(data.get("steamcmd_username") or ""),
         ).normalized()

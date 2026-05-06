@@ -13,7 +13,7 @@ def format_active_mod_row(
     missing: bool = False,
     max_value_length: int = 180,
 ) -> str:
-    marker = "!" if missing else " "
+    marker = "off" if not entry.enabled else ("!" if missing else " ")
     source = f"Workshop {entry.workshop_id}" if entry.workshop_id else entry.source_type.replace("_", " ")
     name = entry.display_name or Path(entry.value).stem or "Unnamed mod"
     value = _middle_truncate(entry.value, max_value_length)

@@ -17,6 +17,7 @@ Depending on how you use it, the app may access:
 
 - Conan Exiles client and dedicated server folders
 - Steam appmanifest files and Workshop content folders
+- SteamCMD path and SteamCMD-created Workshop folders
 - local `.pak` files you select
 - `modlist.txt` files
 - Conan configuration, save, and log files
@@ -35,6 +36,7 @@ This may include:
 - active mod entries
 - Workshop metadata cache
 - hosted server profiles
+- optional Steam username for SteamCMD retries
 - profile records
 - backup metadata and backup files
 - activity history
@@ -74,6 +76,12 @@ If you configure a hosted server profile, the app may connect to that server usi
 
 These connections are used only for hosted features you request, such as connection tests, file listing, modlist upload, pak upload, or config backup.
 
+### SteamCMD Workshop Downloads
+
+If you explicitly start a Workshop download or update, the app launches your configured `steamcmd.exe` for Conan Exiles Workshop app id `440900`.
+
+SteamCMD may contact Valve/Steam services. The app uses anonymous login first. If a username is configured for account-based retry, the app passes that username to SteamCMD but does not store or pass a Steam password.
+
 ### External Links
 
 If you click links in the app, your browser may open external sites such as:
@@ -107,4 +115,3 @@ You can also remove profiles, backups, and app-managed records from inside the a
 For support or privacy questions, use GitHub Issues:
 
 - https://github.com/Vercadi/conan-exiles-enhanced-manager/issues
-

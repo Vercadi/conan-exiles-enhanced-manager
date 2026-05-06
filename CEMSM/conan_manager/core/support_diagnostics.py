@@ -12,9 +12,12 @@ from .. import __app_name__, __version__
 from ..models.activity import ActivityRecord
 from ..models.app_paths import ConanAppPaths
 from ..models.hosted import HostedProfile
+from ..models.modlist import ActiveModEntry
+from ..models.workshop import WORKSHOP_STATUS_DOWNLOADED, WORKSHOP_STATUS_MISSING, WorkshopItem
+from .steamcmd_workshop import validate_steamcmd_path
 
 SENSITIVE_FIELD_PATTERN = re.compile(
-    r"(?i)\b(password|pass|token|api[_-]?key|private[_-]?key|secret)\b\s*[:=]\s*([^\r\n|]+)"
+    r"(?i)\b([A-Za-z0-9_.-]*(?:password|pass|token|api[_-]?key|private[_-]?key|secret)[A-Za-z0-9_.-]*)\b\s*[:=]\s*([^\r\n|]+)"
 )
 
 
@@ -56,11 +59,17 @@ class SupportDiagnosticsService:
         backup_root: Path,
         hosted_profiles: Iterable[HostedProfile] = (),
         activity_records: Iterable[ActivityRecord] = (),
+        active_mods: Iterable[ActiveModEntry] = (),
+        workshop_items: Iterable[WorkshopItem] = (),
+        steamcmd_path: Path | str | None = None,
         log_tail_lines: int = 80,
     ) -> str:
         sections = [
             self._header(),
+            self._feature_summary(),
             self._steam_summary(paths),
+            self._steamcmd_summary(steamcmd_path),
+            self._mod_summary(active_mods, workshop_items),
             self._target_summary(paths),
             self._hosted_summary(hosted_profiles),
             self._activity_summary(activity_records),
@@ -95,6 +104,47 @@ class SupportDiagnosticsService:
         )
         rows.append(f"- Workshop content: {redact_path(paths.workshop_content_dir)}")
         return "\n".join(rows)
+
+    @staticmethod
+    def _feature_summary() -> str:
+        return "\n".join(
+            [
+                "Feature flags:",
+                "- Local mod library: enabled",
+                "- Steam Workshop scan: enabled",
+                "- SteamCMD Workshop downloads: enabled",
+                "- Dedicated server launch/config: enabled",
+                "- Hosted FTP/SFTP file access: enabled",
+                "- Hosted panel APIs/restart: not implemented",
+            ]
+        )
+
+    @staticmethod
+    def _steamcmd_summary(steamcmd_path: Path | str | None) -> str:
+        status = validate_steamcmd_path(steamcmd_path)
+        return "\n".join(
+            [
+                "SteamCMD:",
+                f"- Status: {'configured' if status.ok else 'not configured'}",
+                f"- Path: {redact_path(status.path) if status.path else 'Not configured'}",
+                f"- Message: {redact_sensitive_text(status.message)}",
+            ]
+        )
+
+    @staticmethod
+    def _mod_summary(active_mods: Iterable[ActiveModEntry], workshop_items: Iterable[WorkshopItem]) -> str:
+        active_list = list(active_mods)
+        workshop_list = list(workshop_items)
+        return "\n".join(
+            [
+                "Mods:",
+                f"- Active entries: {len(active_list)}",
+                f"- Active enabled: {sum(1 for entry in active_list if entry.enabled)}",
+                f"- Workshop cached: {len(workshop_list)}",
+                f"- Workshop downloaded: {sum(1 for item in workshop_list if item.status == WORKSHOP_STATUS_DOWNLOADED)}",
+                f"- Workshop missing download: {sum(1 for item in workshop_list if item.status == WORKSHOP_STATUS_MISSING)}",
+            ]
+        )
 
     @staticmethod
     def _activity_summary(records: Iterable[ActivityRecord]) -> str:

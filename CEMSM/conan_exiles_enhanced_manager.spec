@@ -14,6 +14,9 @@ asset_datas = []
 if Path("assets").is_dir():
     asset_datas.append(("assets", "assets"))
 
+# Runtime folders are intentionally not included in datas:
+# data/, backups/, logs/, steamcmd/, tmp/, and docs/.
+
 a = Analysis(
     ["app.py"],
     pathex=[],

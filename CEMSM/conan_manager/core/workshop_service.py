@@ -39,22 +39,29 @@ class WorkshopService:
         return items
 
     def scan(self, workshop_root: Path | None) -> list[WorkshopItem]:
+        return self.scan_roots([workshop_root])
+
+    def scan_roots(self, workshop_roots: list[Path | None]) -> list[WorkshopItem]:
         current = self.cache.list_items()
         by_id = {item.workshop_id: item for item in current}
         ordered_ids = [item.workshop_id for item in current]
 
-        if workshop_root and workshop_root.is_dir():
+        roots = [root for root in workshop_roots if root and root.is_dir()]
+        for workshop_root in roots:
             for folder in sorted(path for path in workshop_root.iterdir() if path.is_dir() and path.name.isdigit()):
-                if folder.name not in by_id:
+                if folder.name not in ordered_ids:
                     ordered_ids.append(folder.name)
-                by_id[folder.name] = self._item_from_folder(folder.name, workshop_root, existing=by_id.get(folder.name))
+                existing = by_id.get(folder.name)
+                by_id[folder.name] = self._item_from_folder(folder.name, workshop_root, existing=existing)
 
         for workshop_id in list(ordered_ids):
             existing = by_id[workshop_id]
             if existing.folder_path and existing.folder_path.is_dir():
-                by_id[workshop_id] = self._item_from_folder(workshop_id, workshop_root, existing=existing)
+                root = _root_for_existing_or_default(existing, roots)
+                by_id[workshop_id] = self._item_from_folder(workshop_id, root, existing=existing)
             else:
-                by_id[workshop_id] = self._missing_item(workshop_id, workshop_root, existing=existing)
+                root = _root_for_existing_or_default(existing, roots)
+                by_id[workshop_id] = self._missing_item(workshop_id, root, existing=existing)
 
         updated = [by_id[workshop_id] for workshop_id in ordered_ids if workshop_id in by_id]
         self.cache.save(updated)
@@ -125,3 +132,15 @@ def _safe_mtime(path: Path) -> float:
         return path.stat().st_mtime
     except OSError:
         return 0.0
+
+
+def _root_for_existing_or_default(existing: WorkshopItem, roots: list[Path]) -> Path | None:
+    if existing.folder_path:
+        for root in roots:
+            try:
+                existing.folder_path.relative_to(root)
+                return root
+            except ValueError:
+                continue
+        return existing.folder_path.parent
+    return roots[0] if roots else None

@@ -147,6 +147,11 @@ class ConanAppPaths:
         config = self.dedicated_server_config_dir
         return config / "Game.ini" if config else None
 
+    @property
+    def dedicated_server_game_user_settings(self) -> Optional[Path]:
+        config = self.dedicated_server_config_dir
+        return config / "GameUserSettings.ini" if config else None
+
     def client_save_databases(self) -> list[Path]:
         return _database_files(self.client_save_root)
 
