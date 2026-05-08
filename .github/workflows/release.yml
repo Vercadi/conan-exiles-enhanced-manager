@@ -11,10 +11,10 @@ jobs:
     strategy:
       matrix:
         include:
-          - os: ubuntu-latest
-            name: linux
-            archive: tar.gz
-            archive_cmd: tar -czf ConanExilesEnhancedManager-linux.tar.gz dist/
+          # - os: ubuntu-latest
+          #   name: linux
+          #   archive: tar.gz
+          #   archive_cmd: tar -czf ConanExilesEnhancedManager-linux.tar.gz dist/
           - os: windows-latest
             name: windows
             archive: zip
