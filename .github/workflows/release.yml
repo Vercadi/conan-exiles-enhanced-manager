@@ -1,0 +1,85 @@
+name: Release Pipeline
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          # - os: ubuntu-latest
+          #   name: linux
+          #   archive: tar.gz
+          #   archive_cmd: tar -czf ConanExilesEnhancedManager-linux.tar.gz dist/
+          - os: windows-latest
+            name: windows
+            archive: zip
+            archive_cmd: Compress-Archive -Path dist/* -DestinationPath ConanExilesEnhancedManager-windows.zip
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+
+    - name: Install dependencies
+      run: |
+        cd CEMSM
+        pip install -r requirements.txt
+      shell: bash
+
+    - name: Run tests
+      run: |
+        cd CEMSM
+        pytest tests/
+      shell: bash
+
+    - name: Build executable
+      run: |
+        cd CEMSM
+        python -m PyInstaller conan_exiles_enhanced_manager.spec --noconfirm --clean
+      shell: bash
+
+    - name: Create release archive
+      run: |
+        cd CEMSM
+        if [ "$RUNNER_OS" == "Windows" ]; then
+          powershell -Command "Get-ChildItem dist | Compress-Archive -DestinationPath ConanExilesEnhancedManager-windows.zip"
+        else
+          tar -czf ConanExilesEnhancedManager-linux.tar.gz dist/
+        fi
+      shell: bash
+
+    - name: Upload build artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: build-${{ matrix.name }}
+        path: ./CEMSM/ConanExilesEnhancedManager-${{ matrix.name }}.${{ matrix.archive }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+    - name: Download all artifacts
+      uses: actions/download-artifact@v4
+      with:
+        path: ./artifacts
+
+    - name: Create GitHub Release
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: ${{ github.ref_name }}
+        name: Release ${{ github.ref_name }}
+        draft: false
+        prerelease: false
+        files: ./artifacts/**/*
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
