@@ -47,6 +47,12 @@ def test_preferences_normalize_invalid_release_settings() -> None:
     assert preferences.confirmation_mode == "destructive_only"
 
 
+def test_app_paths_treat_json_null_string_as_empty_workshop_path() -> None:
+    paths = ConanAppPaths.from_dict({"workshop_content_dir": "null"})
+
+    assert paths.workshop_content_dir is None
+
+
 def test_update_checker_version_comparison() -> None:
     assert is_newer_version("v0.8.1", "0.8.0")
     assert is_newer_version("1.0.0", "0.9.9")
@@ -116,7 +122,7 @@ def test_build_scripts_and_spec_exclude_runtime_data() -> None:
     assert "docs/" in spec
     assert "steamcmd" in spec
     assert "Implementation docs under docs/ are intentionally excluded." in export_script
-    assert '"data", "backups", "logs", "steamcmd", "tmp", "build", "dist"' in export_script
+    assert '"data", "backups", "logs", "steamcmd", "tmp", "build", "dist", "release"' in export_script
     assert "Remove-Item -Recurse -Force" in export_script
     assert '$_.Extension -in @(".pyc", ".pyo")' in export_script
 
@@ -143,3 +149,26 @@ def test_first_run_guidance_and_workshop_failure_summary() -> None:
     assert "login required" in summary
     assert steamcmd_may_need_account("License missing")
     assert "Settings > SteamCMD" in steamcmd_setup_guidance()
+
+    client_only_messages = first_run_guidance(ConanAppPaths(), dedicated_server_enabled=False)
+    assert not any("Dedicated Server was not detected" in message for message in client_only_messages)
+
+
+def test_first_run_preferences_roundtrip_setup_and_dedicated_toggle() -> None:
+    preferences = AppPreferences(
+        first_run_setup_completed=True,
+        dedicated_server_enabled=False,
+        client_mod_apply_mode="source",
+    )
+
+    loaded = AppPreferences.from_dict(preferences.to_dict())
+
+    assert loaded.first_run_setup_completed
+    assert not loaded.dedicated_server_enabled
+    assert loaded.client_mod_apply_mode == "source"
+
+
+def test_workshop_failure_summary_explains_broken_steamcmd_folder() -> None:
+    summary = workshop_download_failure_summary("ILocalize::AddFile() failed to load file 'public/steambootstrapper_english.txt'.")
+
+    assert "complete extracted SteamCMD folder" in summary

@@ -5,16 +5,26 @@ import logging
 import os
 from pathlib import Path
 import threading
-from tkinter import messagebox, simpledialog
+import sys
+import tkinter as tk
+from tkinter import filedialog, messagebox, simpledialog
 import webbrowser
 
 import customtkinter as ctk
+
+try:
+    from tkinterdnd2 import COPY as DND_COPY
+    from tkinterdnd2 import DND_FILES, TkinterDnD
+except Exception:  # pragma: no cover - optional native drag/drop dependency
+    DND_COPY = None
+    DND_FILES = None
+    TkinterDnD = None
 
 from .. import __app_name__, __version__
 from ..core.activity_log import ActivityLog
 from ..core.backup_manager import BackupManager, BackupRecord
 from ..core.compatibility import EnhancedStatus, detect_enhanced_status, old_mod_warnings
-from ..core.discovery import discover_all
+from ..core.discovery import discover_all, validate_client_root, validate_dedicated_server_root
 from ..core.hosted_profile_store import HostedProfileStore
 from ..core.hosted_service import (
     apply_hosted_upload_plan,
@@ -34,9 +44,15 @@ from ..core.modlist_service import (
     active_entry_from_pak,
     active_entry_from_workshop_item,
     apply_modlist_plans,
+    apply_selected_uninstall_plans,
     build_apply_plans,
+    build_selected_sync_plans,
+    build_selected_uninstall_plans,
     compare_client_server,
+    preview_selected_uninstall_text,
     restore_latest_modlist,
+    target_install_state_for_entry,
+    target_status_labels_for_entry,
 )
 from ..core.profile_store import ProfileStore
 from ..core.profile_warnings import profile_entry_warnings
@@ -55,7 +71,7 @@ from ..core.server_config_editor import (
     build_server_config_edit_plan,
     config_preview_text,
 )
-from ..core.server_launcher import launch_dedicated_server
+from ..core.server_launcher import launch_client_game, launch_dedicated_server
 from ..core.server_logs import read_server_log_snapshot
 from ..core.server_process import ServerProcessService
 from ..core.support_diagnostics import SupportDiagnosticsService
@@ -70,12 +86,14 @@ from ..core.steamcmd_workshop import (
     steamcmd_workshop_root,
     validate_steamcmd_path,
 )
+from ..core.target_actions import move_items_to_edge, move_items_to_index, selected_active_entries
 from ..core.update_checker import ReleaseInfo, check_for_update
 from ..core.vanilla_restore import apply_vanilla_restore, build_vanilla_restore_plans, preview_vanilla_restore_text
 from ..core.workshop_cache import WorkshopCache
 from ..core.workshop_parser import parse_workshop_ids
-from ..core.workshop_service import WorkshopService
+from ..core.workshop_service import WorkshopService, workshop_display_name
 from ..models.app_paths import ConanAppPaths
+from ..models.app_paths import path_from_setting
 from ..models.app_preferences import AppPreferences
 from ..models.hosted import HostedInventory, HostedPathDetection, HostedProfile, HostedUploadPlan
 from ..models.modlist import (
@@ -83,13 +101,15 @@ from ..models.modlist import (
     TARGET_CLIENT,
     TARGET_DEDICATED_SERVER,
     TARGET_LABELS,
+    APPLY_MODE_COPY,
+    APPLY_MODE_SOURCE,
     ActiveModEntry,
     ModlistTargetPlan,
 )
 from ..models.profiles import ModProfile, ServerProfile
 from ..models.server import ServerConfigSnapshot, ServerLogSnapshot, ServerProcessStatus, ServerRuntimeState
 from ..models.ui_state import BannerState, banner
-from ..models.workshop import WORKSHOP_STATUS_DOWNLOADED, WorkshopItem
+from ..models.workshop import WORKSHOP_STATUS_DOWNLOADED, WORKSHOP_STATUS_MISSING, WorkshopItem
 from ..core.remote_provider import RemoteProviderError, create_remote_provider, remote_error_summary
 from ..utils.filesystem import ensure_dir
 from ..utils.json_io import read_json, write_json
@@ -122,6 +142,12 @@ def _resolve_app_dirs() -> tuple[Path, Path, Path]:
 DEFAULT_DATA_DIR, DEFAULT_BACKUP_DIR, SETTINGS_FILE = _resolve_app_dirs()
 
 
+def _asset_path(name: str) -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(getattr(sys, "_MEIPASS", Path(sys.executable).resolve().parent)) / "assets" / name
+    return Path(__file__).resolve().parent.parent.parent / "assets" / name
+
+
 class AppWindow(ctk.CTk):
     """Root window for v0.1 read-only manager."""
 
@@ -131,8 +157,10 @@ class AppWindow(ctk.CTk):
         super().__init__()
 
         self.title(f"{__app_name__} v{__version__}")
-        self.geometry("1220x780")
-        self.minsize(1040, 680)
+        self._window_icon_image = None
+        self._set_window_icon()
+        self.geometry("1360x900")
+        self.minsize(1180, 760)
 
         self.preferences = AppPreferences()
         self.ui_tokens: UiTokens = ui_tokens_for_size("default")
@@ -147,14 +175,40 @@ class AppWindow(ctk.CTk):
         self.workshop_download_status = ""
         self._steamcmd_cancel_event: threading.Event | None = None
         self._steamcmd_thread: threading.Thread | None = None
+        self.native_file_drop_available = False
         self.server_runtime = ServerRuntimeState()
         self.status_text = startup_message("shell")
         self.last_action = ""
         self.latest_release: ReleaseInfo | None = None
 
+        self._init_native_file_drop()
         self._init_services()
         self._build_ui()
         self.after(80, self._run_startup_discovery)
+
+    def _init_native_file_drop(self) -> None:
+        if TkinterDnD is None:
+            return
+        try:
+            self.TkdndVersion = TkinterDnD._require(self)
+            self.native_file_drop_available = True
+        except Exception as exc:  # pragma: no cover - depends on TkDND runtime DLL availability
+            log.debug("Native file drag/drop unavailable: %s", exc)
+
+    def _set_window_icon(self) -> None:
+        png_path = _asset_path("app_icon.png")
+        ico_path = _asset_path("app_icon.ico")
+        try:
+            if ico_path.is_file():
+                self.iconbitmap(str(ico_path))
+        except Exception as exc:
+            log.debug("Failed to set .ico window icon: %s", exc)
+        try:
+            if png_path.is_file():
+                self._window_icon_image = tk.PhotoImage(file=str(png_path))
+                self.iconphoto(True, self._window_icon_image)
+        except Exception as exc:
+            log.debug("Failed to set .png window icon: %s", exc)
 
     def _init_services(self) -> None:
         ensure_dir(DEFAULT_DATA_DIR)
@@ -198,8 +252,14 @@ class AppWindow(ctk.CTk):
         self.status_text = startup_message("discovery")
         self.show_banner("info", self.status_text)
         self.refresh_discovery()
-        guidance = first_run_guidance(self.paths, steamcmd_path=self.resolved_steamcmd_path())
+        guidance = first_run_guidance(
+            self.paths,
+            steamcmd_path=self.resolved_steamcmd_path(),
+            dedicated_server_enabled=self.dedicated_server_features_enabled(),
+        )
         self.show_banner("warning" if guidance else "success", guidance[0] if guidance else startup_message("ready"))
+        if not self.preferences.first_run_setup_completed and not validate_client_root(self.paths.client_root):
+            self.after(120, self.show_first_run_setup)
         if self.preferences.auto_check_updates:
             self.check_for_updates(show_no_update=False)
 
@@ -242,8 +302,9 @@ class AppWindow(ctk.CTk):
 
     def _build_ui(self) -> None:
         self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(1, weight=1)
+        self.grid_rowconfigure(2, weight=1)
         self._build_banner()
+        self._build_global_quick_actions()
         self.tabs = ctk.CTkTabview(
             self,
             fg_color="#101010",
@@ -255,7 +316,7 @@ class AppWindow(ctk.CTk):
             text_color="#f1e7d0",
             command=self._on_tab_selected,
         )
-        self.tabs.grid(row=1, column=0, sticky="nsew", padx=8, pady=(0, 8))
+        self.tabs.grid(row=2, column=0, sticky="nsew", padx=8, pady=(0, 8))
         self._tab_frames = {}
         for name in ("Dashboard", "Workshop", "Active Mods", "Profiles", "Server", "Hosted", "Settings", "Help"):
             frame = self.tabs.add(name)
@@ -289,6 +350,36 @@ class AppWindow(ctk.CTk):
         )
         self._banner_label.grid(row=0, column=0, sticky="ew", padx=10, pady=6)
 
+    def _build_global_quick_actions(self) -> None:
+        bar = ctk.CTkFrame(self, fg_color="#141210", border_width=1, border_color="#3a3028")
+        bar.grid(row=1, column=0, sticky="ew", padx=8, pady=(0, 6))
+        bar.grid_columnconfigure(0, weight=0)
+        ctk.CTkLabel(
+            bar,
+            text="Quick Actions",
+            font=self.ui_font("small"),
+            text_color="#f0b35f",
+        ).grid(row=0, column=0, sticky="w", padx=(10, 8), pady=6)
+        actions = [
+            ("Start Game", self.launch_client_game_from_ui, "#7d4429"),
+            ("Start Server", self.launch_dedicated_server_from_ui, "#7d4429"),
+            ("Open Game Folder", self.open_client_root_folder, "#3a3028"),
+            ("Open Dedicated Folder", self.open_dedicated_root_folder, "#3a3028"),
+            ("Open Logs", self.open_dedicated_logs_folder, "#3a3028"),
+            ("Backup Now", self.backup_configs_and_saves_from_ui, "#5d3424"),
+        ]
+        for index, (label, command, color) in enumerate(actions, start=1):
+            bar.grid_columnconfigure(index, weight=1)
+            ctk.CTkButton(
+                bar,
+                text=label,
+                height=self.ui_tokens.compact_button_height,
+                font=self.ui_font("body"),
+                fg_color=color,
+                hover_color="#925333" if color == "#7d4429" else "#4a3c31",
+                command=command,
+            ).grid(row=0, column=index, sticky="ew", padx=(0, 8), pady=6)
+
     def _construct_tab(self, tab_name: str, cls, attr_name: str):
         if tab_name == "Workshop":
             self._ensure_workshop_services()
@@ -307,6 +398,36 @@ class AppWindow(ctk.CTk):
     def select_tab(self, tab_name: str) -> None:
         self._ensure_tab(tab_name)
         self.tabs.set(tab_name)
+
+    def center_window(self, window: ctk.CTkToplevel, width: int, height: int) -> None:
+        self.update_idletasks()
+        screen_width = max(1, self.winfo_screenwidth())
+        screen_height = max(1, self.winfo_screenheight())
+        parent_x = self.winfo_rootx()
+        parent_y = self.winfo_rooty()
+        parent_width = max(1, self.winfo_width())
+        parent_height = max(1, self.winfo_height())
+        x = parent_x + (parent_width - width) // 2
+        y = parent_y + (parent_height - height) // 2
+        x = max(0, min(x, screen_width - width))
+        y = max(0, min(y, screen_height - height))
+        window.geometry(f"{width}x{height}+{x}+{y}")
+
+    def register_file_drop_target(self, widget, callback) -> bool:
+        if not self.native_file_drop_available or DND_FILES is None:
+            return False
+        try:
+            widget.drop_target_register(DND_FILES)
+            widget.dnd_bind("<<Drop>>", lambda event: self._handle_native_file_drop(event, callback))
+        except Exception as exc:  # pragma: no cover - depends on TkDND runtime registration
+            log.debug("Failed to register file drop target: %s", exc)
+            return False
+        return True
+
+    def _handle_native_file_drop(self, event, callback):
+        paths = [Path(value) for value in self.tk.splitlist(event.data) if value]
+        callback(paths)
+        return DND_COPY or getattr(event, "action", None)
 
     def ui_font(self, kind: str):
         mapping = {
@@ -359,6 +480,196 @@ class AppWindow(ctk.CTk):
         self.show_banner("success", "Settings saved. Restart the app to fully refresh existing tab sizing.")
         self._refresh_main_tabs()
 
+    def dedicated_server_features_enabled(self) -> bool:
+        return bool(self.preferences.dedicated_server_enabled)
+
+    def target_apply_modes(self) -> dict[str, str]:
+        return {
+            TARGET_CLIENT: self.preferences.client_mod_apply_mode,
+            TARGET_DEDICATED_SERVER: self.preferences.dedicated_server_mod_apply_mode,
+        }
+
+    def update_workshop_content_dir(self, path_text: str) -> None:
+        self.paths.workshop_content_dir = path_from_setting(path_text)
+        self.save_settings()
+
+    def update_local_paths(
+        self,
+        *,
+        client_root: str = "",
+        dedicated_server_root: str = "",
+        workshop_content_dir: str = "",
+    ) -> None:
+        self.paths.client_root = path_from_setting(client_root)
+        self.paths.dedicated_server_root = path_from_setting(dedicated_server_root)
+        self.paths.workshop_content_dir = path_from_setting(workshop_content_dir)
+        if self.paths.dedicated_server_root:
+            self.preferences.dedicated_server_enabled = True
+        self.save_settings()
+
+    def set_first_run_setup_completed(self, completed: bool = True) -> None:
+        self.preferences.first_run_setup_completed = bool(completed)
+        self.save_settings()
+
+    def path_validation_summary(self) -> dict[str, str]:
+        return {
+            "client": _validation_label(self.paths.client_root, validate_client_root, "Conan client"),
+            "dedicated": _validation_label(
+                self.paths.dedicated_server_root,
+                validate_dedicated_server_root,
+                "Dedicated server",
+            ),
+            "workshop": _folder_validation_label(self.paths.workshop_content_dir, "Workshop content"),
+        }
+
+    def show_first_run_setup(self) -> None:
+        window = ctk.CTkToplevel(self)
+        window.title("First-Run Setup")
+        self.center_window(window, 820, 460)
+        window.minsize(720, 420)
+        window.grid_columnconfigure(1, weight=1)
+
+        client_var = ctk.StringVar(value=str(self.paths.client_root or ""))
+        server_var = ctk.StringVar(value=str(self.paths.dedicated_server_root or ""))
+        workshop_var = ctk.StringVar(value=str(self.paths.workshop_content_dir or ""))
+        steamcmd_var = ctk.StringVar(value=self.preferences.steamcmd_path)
+        use_server_var = tk.BooleanVar(value=self.dedicated_server_features_enabled())
+
+        ctk.CTkLabel(
+            window,
+            text="Conan Exiles Enhanced Manager Setup",
+            font=self.ui_font("title"),
+            text_color="#f1e7d0",
+        ).grid(row=0, column=0, columnspan=3, sticky="w", padx=14, pady=(14, 4))
+        ctk.CTkLabel(
+            window,
+            text="Set paths here once. You can change them later in Settings.",
+            font=self.ui_font("small"),
+            text_color="#b9aa92",
+            anchor="w",
+        ).grid(row=1, column=0, columnspan=3, sticky="ew", padx=14, pady=(0, 12))
+
+        def browse_dir(variable, title: str) -> None:
+            path = filedialog.askdirectory(title=title, parent=window)
+            if path:
+                variable.set(path)
+
+        def browse_steamcmd() -> None:
+            path = filedialog.askopenfilename(
+                title="Select steamcmd.exe",
+                filetypes=[("SteamCMD", "steamcmd.exe"), ("Executables", "*.exe"), ("All files", "*.*")],
+                parent=window,
+            )
+            if path:
+                steamcmd_var.set(path)
+
+        rows = [
+            ("Conan client root", client_var, lambda: browse_dir(client_var, "Select Conan Exiles folder")),
+            ("Dedicated server root", server_var, lambda: browse_dir(server_var, "Select Conan Exiles Dedicated Server folder")),
+            ("Workshop content 440900", workshop_var, lambda: browse_dir(workshop_var, "Select Workshop content\\440900 folder")),
+            ("steamcmd.exe", steamcmd_var, browse_steamcmd),
+        ]
+        for offset, (label, variable, command) in enumerate(rows, start=2):
+            ctk.CTkLabel(window, text=label, font=self.ui_font("body"), text_color="#b9aa92").grid(
+                row=offset,
+                column=0,
+                sticky="w",
+                padx=14,
+                pady=5,
+            )
+            ctk.CTkEntry(
+                window,
+                textvariable=variable,
+                font=self.ui_font("body"),
+                fg_color="#101010",
+                border_color="#3a3028",
+                text_color="#f1e7d0",
+            ).grid(row=offset, column=1, sticky="ew", padx=10, pady=5)
+            ctk.CTkButton(
+                window,
+                text="Browse",
+                width=90,
+                height=self.ui_tokens.compact_button_height,
+                font=self.ui_font("body"),
+                fg_color="#3a3028",
+                hover_color="#4a3c31",
+                command=command,
+            ).grid(row=offset, column=2, sticky="e", padx=(0, 14), pady=5)
+
+        ctk.CTkSwitch(
+            window,
+            text="Use Dedicated Server features",
+            variable=use_server_var,
+            onvalue=True,
+            offvalue=False,
+            font=self.ui_font("body"),
+            text_color="#f1e7d0",
+            progress_color="#7d4429",
+        ).grid(row=6, column=1, sticky="w", padx=10, pady=(8, 4))
+
+        status_label = ctk.CTkLabel(
+            window,
+            text="No Conan files are written by this setup window.",
+            font=self.ui_font("small"),
+            text_color="#b9aa92",
+            anchor="w",
+            justify="left",
+        )
+        status_label.grid(row=7, column=0, columnspan=3, sticky="ew", padx=14, pady=(4, 12))
+
+        def save_setup() -> None:
+            client_root = path_from_setting(client_var.get())
+            server_root = path_from_setting(server_var.get())
+            if not validate_client_root(client_root):
+                status_label.configure(
+                    text="Conan client root is required and must contain ConanSandbox.exe or the Win64 shipping executable.",
+                    text_color="#c98a2e",
+                )
+                return
+            if use_server_var.get() and server_root and not validate_dedicated_server_root(server_root):
+                status_label.configure(
+                    text="Dedicated server root is not valid. Fix it, clear it, or turn off Dedicated Server features.",
+                    text_color="#c98a2e",
+                )
+                return
+            self.preferences.steamcmd_path = str(steamcmd_var.get() or "").strip()
+            self.preferences.dedicated_server_enabled = bool(use_server_var.get())
+            if not self.preferences.dedicated_server_enabled:
+                server_var.set("")
+            self.preferences.first_run_setup_completed = True
+            self.preferences = self.preferences.normalized()
+            self.update_local_paths(
+                client_root=client_var.get(),
+                dedicated_server_root=server_var.get(),
+                workshop_content_dir=workshop_var.get(),
+            )
+            self.refresh_discovery()
+            window.destroy()
+            self.show_banner("success", "Setup saved. You can change paths later in Settings.")
+
+        controls = ctk.CTkFrame(window, fg_color="transparent")
+        controls.grid(row=8, column=0, columnspan=3, sticky="e", padx=14, pady=(4, 14))
+        ctk.CTkButton(
+            controls,
+            text="Skip For Now",
+            width=120,
+            height=self.ui_tokens.compact_button_height,
+            fg_color="#3a3028",
+            hover_color="#4a3c31",
+            command=lambda: (self.set_first_run_setup_completed(True), window.destroy()),
+        ).grid(row=0, column=0, padx=(0, 8))
+        ctk.CTkButton(
+            controls,
+            text="Save Setup",
+            width=130,
+            height=self.ui_tokens.compact_button_height,
+            fg_color="#7d4429",
+            hover_color="#925333",
+            command=save_setup,
+        ).grid(row=0, column=1)
+        window.transient(self)
+        window.grab_set()
+
     def check_for_updates(self, *, show_no_update: bool = True, status_callback=None) -> None:
         def _update_available(release: ReleaseInfo) -> None:
             def _show() -> None:
@@ -399,6 +710,7 @@ class AppWindow(ctk.CTk):
             discovered = discover_all(
                 known_client_root=self.paths.client_root,
                 known_dedicated_server_root=self.paths.dedicated_server_root,
+                known_workshop_content_dir=self.paths.workshop_content_dir,
             )
             discovered.data_dir = self.paths.data_dir or DEFAULT_DATA_DIR
             discovered.backup_dir = self.paths.backup_dir or DEFAULT_BACKUP_DIR
@@ -437,6 +749,26 @@ class AppWindow(ctk.CTk):
         self.show_banner("success" if records else "warning", self.last_action)
         self.record_activity("backup", "completed", target="configs/saves", details=f"{len(records)} file(s)")
         return records
+
+    def backup_configs_and_saves_from_ui(self) -> None:
+        records = self.backup_configs_and_saves()
+        if records:
+            self.notify_info("Backup Complete", f"Backed up {len(records)} config/save file(s).")
+        else:
+            self.notify_warning("Backup Complete", "No config or save database files were found to back up.")
+        self._refresh_main_tabs()
+
+    def open_client_root_folder(self) -> None:
+        self.open_path_in_shell(self.paths.client_root)
+
+    def open_dedicated_root_folder(self) -> None:
+        self.open_path_in_shell(self.paths.dedicated_server_root)
+
+    def open_dedicated_logs_folder(self) -> None:
+        self.open_path_in_shell(self.paths.dedicated_server_log_dir)
+
+    def open_workshop_content_folder(self) -> None:
+        self.open_path_in_shell(self.paths.workshop_content_dir)
 
     def copy_support_info(self) -> None:
         report = self.diagnostics.build_report(
@@ -480,7 +812,7 @@ class AppWindow(ctk.CTk):
         profile = self.profile_store.save_mod_profile(
             name=name,
             entries=self.active_mods,
-            target_coverage=target_coverage or [TARGET_CLIENT, TARGET_DEDICATED_SERVER],
+            target_coverage=target_coverage or self.default_profile_coverage(),
             notes=notes,
         )
         self.named_mod_profiles = self.profile_store.list_mod_profiles()
@@ -490,6 +822,51 @@ class AppWindow(ctk.CTk):
         self.record_activity("profile save", "saved", target=", ".join(profile.target_coverage), details=profile.name)
         self._refresh_main_tabs()
         return profile
+
+    def save_active_load_order_profile_from_ui(self, target: str = TARGET_BOTH) -> ModProfile | None:
+        name = simpledialog.askstring(
+            "Save Mod Load Order",
+            "Load order name:",
+            parent=self,
+        )
+        if not name:
+            return None
+        if target == TARGET_BOTH:
+            coverage = self.default_profile_coverage()
+        else:
+            coverage = [target]
+        profile = self.save_current_mod_profile(name, target_coverage=coverage)
+        self.notify_info("Load Order Saved", f"Saved mod load order {profile.name}.")
+        return profile
+
+    def default_profile_coverage(self) -> list[str]:
+        coverage = [TARGET_CLIENT]
+        if self.dedicated_server_features_enabled():
+            coverage.append(TARGET_DEDICATED_SERVER)
+        return coverage
+
+    def update_mod_profile_coverage(self, name: str, target_coverage: list[str], notes: str | None = None) -> None:
+        if TARGET_DEDICATED_SERVER in target_coverage and not self.dedicated_server_features_enabled():
+            self.notify_warning(
+                "Dedicated Server Disabled",
+                "This profile includes Dedicated Server coverage, but dedicated-server features are disabled.",
+                popup=False,
+            )
+        try:
+            profile = self.profile_store.update_mod_profile_metadata(
+                name,
+                target_coverage=target_coverage,
+                notes=notes,
+            )
+        except ValueError as exc:
+            self.notify_warning("Profile Update Failed", str(exc))
+            return
+        self.named_mod_profiles = self.profile_store.list_mod_profiles()
+        self.last_action = f"Updated profile coverage for {profile.name}."
+        self.status_text = self.last_action
+        self.show_banner("success", self.last_action)
+        self.record_activity("profile coverage", "updated", target=", ".join(profile.target_coverage), details=profile.name)
+        self._refresh_main_tabs()
 
     def duplicate_mod_profile(self, source_name: str, new_name: str) -> None:
         try:
@@ -537,6 +914,25 @@ class AppWindow(ctk.CTk):
             self.notify_warning("Profile Missing", f"Profile not found: {name}")
             return
         self._show_profile_load_preview(profile)
+
+    def load_mod_profile(self, name: str) -> bool:
+        profile = self.profile_store.get_mod_profile(name)
+        if profile is None:
+            self.notify_warning("Profile Missing", f"Profile not found: {name}", popup=False)
+            return False
+        self._ensure_workshop_services()
+        warnings = profile_entry_warnings(profile.entries, self.workshop_items)
+        self.active_mods = list(profile.entries)
+        self.save_active_mods()
+        self.last_action = f"Loaded mod profile {profile.name}."
+        self.status_text = self.last_action
+        if warnings:
+            self.show_banner("warning", f"{self.last_action} {len(warnings)} warning(s); check Active Mods before applying.")
+        else:
+            self.show_banner("success", self.last_action)
+        self.record_activity("profile load", "loaded", target=", ".join(profile.target_coverage), details=profile.name)
+        self._refresh_main_tabs()
+        return True
 
     def preview_restore_snapshot(self, backup_id: str) -> None:
         validation = validate_snapshot_record(self.backup, backup_id)
@@ -605,6 +1001,38 @@ class AppWindow(ctk.CTk):
         self._refresh_main_tabs()
         return len(components)
 
+    def forget_library_rows(self, rows: list[tuple[str, str]]) -> int:
+        component_ids = [value for kind, value in rows if kind == "component"]
+        source_ids = [value for kind, value in rows if kind == "source"]
+        workshop_ids = [value for kind, value in rows if kind == "workshop"]
+        removed = self.mod_library.remove_components(component_ids)
+        removed += self.mod_library.remove_sources(source_ids)
+        if workshop_ids:
+            removed += self.remove_workshop_cache_entries(workshop_ids, refresh=False)
+        removed_component_ids = set(component_ids)
+        removed_source_ids = set(source_ids)
+        removed_workshop_ids = set(workshop_ids)
+        before_active = len(self.active_mods)
+        self.active_mods = [
+            entry
+            for entry in self.active_mods
+            if entry.component_id not in removed_component_ids
+            and entry.source_id not in removed_source_ids
+            and entry.workshop_id not in removed_workshop_ids
+        ]
+        removed_active = before_active - len(self.active_mods)
+        if removed_active:
+            self.save_active_mods()
+        self.last_action = (
+            f"Forgot {removed} library/cache record(s) and removed {removed_active} matching active entr"
+            f"{'y' if removed_active == 1 else 'ies'}. Files were not deleted."
+        )
+        self.status_text = self.last_action
+        self.show_banner("success" if removed else "info", self.last_action)
+        self.record_activity("library forget", "completed", target="library", details=self.last_action)
+        self._refresh_main_tabs()
+        return removed
+
     def add_library_component_to_active(self, component_id: str) -> bool:
         return self._add_component_to_active(component_id, refresh=True, quiet=False)
 
@@ -641,6 +1069,175 @@ class AppWindow(ctk.CTk):
             self.show_banner("info", self.last_action)
             self._refresh_main_tabs(selected_mod_index=index)
 
+    def set_active_mods_enabled(self, indices: list[int], enabled: bool) -> int:
+        selected = selected_active_entries(self.active_mods, indices)
+        if not selected:
+            self.notify_warning("No Active Mods Selected", "Select one or more active mods first.", popup=False)
+            return 0
+        selected_ids = {id(entry) for entry in selected}
+        for entry in self.active_mods:
+            if id(entry) in selected_ids:
+                entry.enabled = enabled
+        self.save_active_mods()
+        state = "enabled" if enabled else "disabled"
+        self.last_action = f"{state.title()} {len(selected)} selected active mod(s)."
+        self.status_text = self.last_action
+        self.show_banner("info", self.last_action)
+        self.record_activity("active mods bulk", state, target="active", details=f"{len(selected)} mod(s)")
+        self._refresh_main_tabs()
+        return len(selected)
+
+    def remove_active_mods_at(self, indices: list[int]) -> int:
+        valid = sorted({index for index in indices if 0 <= index < len(self.active_mods)}, reverse=True)
+        if not valid:
+            self.notify_warning("No Active Mods Selected", "Select one or more active mods first.", popup=False)
+            return 0
+        removed = []
+        for index in valid:
+            removed.append(self.active_mods.pop(index))
+        self.save_active_mods()
+        self.last_action = f"Removed {len(removed)} mod(s) from Active Load Order. Target files were not changed."
+        self.status_text = self.last_action
+        self.show_banner("info", self.last_action)
+        self.record_activity("active mods remove", "removed", target="active", details=f"{len(removed)} mod(s)")
+        self._refresh_main_tabs()
+        return len(removed)
+
+    def remove_duplicate_active_mods(self) -> int:
+        seen: set[str] = set()
+        kept: list[ActiveModEntry] = []
+        removed = 0
+        for entry in self.active_mods:
+            key = _active_entry_identity(entry)
+            if key in seen:
+                removed += 1
+                continue
+            seen.add(key)
+            kept.append(entry)
+        if not removed:
+            self.notify_info("No Duplicates", "No duplicate Active Load Order entries were found.")
+            return 0
+        self.active_mods = kept
+        self.save_active_mods()
+        self.last_action = f"Removed {removed} duplicate Active Load Order entr{'y' if removed == 1 else 'ies'}."
+        self.status_text = self.last_action
+        self.show_banner("success", self.last_action)
+        self.record_activity("active mods dedupe", "completed", target="active", details=self.last_action)
+        self._refresh_main_tabs()
+        return removed
+
+    def add_library_rows_to_active(self, rows: list[tuple[str, str]], *, insert_index: int | None = None) -> int:
+        existing = {_active_entry_identity(active) for active in self.active_mods}
+        entries: list[ActiveModEntry] = []
+        for entry in self._active_entries_from_library_rows(rows, warn=False):
+            entry_key = _active_entry_identity(entry)
+            if entry_key in existing:
+                continue
+            existing.add(entry_key)
+            entries.append(entry)
+        if insert_index is None:
+            self.active_mods.extend(entries)
+            selected_index = len(self.active_mods) - 1 if entries else None
+        else:
+            target_index = max(0, min(int(insert_index), len(self.active_mods)))
+            self.active_mods[target_index:target_index] = entries
+            selected_index = target_index if entries else None
+        added = len(entries)
+        if added:
+            self.save_active_mods()
+        self.last_action = f"Added {added} selected library mod(s) to Active Load Order."
+        self.status_text = self.last_action
+        self.show_banner("success" if added else "info", self.last_action)
+        if added:
+            self.record_activity("active mods add", "added", target="active", details=f"{added} mod(s)")
+        self._refresh_main_tabs(selected_mod_index=selected_index)
+        return added
+
+    def preview_sync_library_rows(self, target: str, rows: list[tuple[str, str]]) -> None:
+        entries = self._active_entries_from_library_rows(rows, warn=True)
+        self.preview_sync_entries(target, entries)
+
+    def preview_sync_active_indices(self, target: str, indices: list[int]) -> None:
+        self.preview_sync_entries(target, selected_active_entries(self.active_mods, indices))
+
+    def preview_sync_entries(self, target: str, entries: list[ActiveModEntry]) -> None:
+        if not entries:
+            self.notify_warning("No Mods Selected", "Select one or more mods to install/sync.", popup=False)
+            return
+        plans = build_selected_sync_plans(
+            self.paths,
+            target,
+            entries,
+            target_apply_modes=self.target_apply_modes(),
+        )
+        self._show_apply_preview(plans)
+
+    def preview_uninstall_active_indices(
+        self,
+        target: str,
+        indices: list[int],
+        *,
+        quarantine_target_files: bool = False,
+    ) -> None:
+        entries = selected_active_entries(self.active_mods, indices)
+        if not entries:
+            self.notify_warning("No Active Mods Selected", "Select active mods to uninstall from the target.", popup=False)
+            return
+        plans = build_selected_uninstall_plans(
+            self.paths,
+            target,
+            entries,
+            target_apply_modes=self.target_apply_modes(),
+        )
+        self._show_selected_uninstall_preview(plans, quarantine_target_files=quarantine_target_files)
+
+    def active_entry_target_labels(self, entry: ActiveModEntry) -> list[str]:
+        return target_status_labels_for_entry(
+            entry,
+            client_mods_dir=self.paths.client_mods_dir,
+            server_mods_dir=self.paths.dedicated_server_mods_dir if self.dedicated_server_features_enabled() else None,
+            client_modlist_path=self.paths.client_modlist_path,
+            server_modlist_path=(
+                self.paths.dedicated_server_modlist_path if self.dedicated_server_features_enabled() else None
+            ),
+            target_apply_modes=self.target_apply_modes(),
+        )
+
+    def active_entry_target_states(self, entry: ActiveModEntry) -> dict[str, str]:
+        states = {
+            TARGET_CLIENT: target_install_state_for_entry(
+                entry,
+                mods_dir=self.paths.client_mods_dir,
+                modlist_path=self.paths.client_modlist_path,
+                apply_mode=self.preferences.client_mod_apply_mode,
+            ),
+        }
+        if self.dedicated_server_features_enabled():
+            states[TARGET_DEDICATED_SERVER] = target_install_state_for_entry(
+                entry,
+                mods_dir=self.paths.dedicated_server_mods_dir,
+                modlist_path=self.paths.dedicated_server_modlist_path,
+                apply_mode=self.preferences.dedicated_server_mod_apply_mode,
+            )
+        return states
+
+    def open_path_in_shell(self, path: Path | None) -> None:
+        if path is None:
+            self.notify_warning("Path Missing", "No path is available for that item.", popup=False)
+            return
+        target = path if path.is_dir() else path.parent
+        if not target.exists():
+            self.notify_warning("Path Missing", f"Path does not exist yet:\n{target}", popup=False)
+            return
+        os.startfile(target)
+
+    def copy_workshop_id(self, workshop_id: str) -> None:
+        self.clipboard_clear()
+        self.clipboard_append(workshop_id)
+        self.last_action = f"Copied Workshop ID {workshop_id}."
+        self.status_text = self.last_action
+        self.show_banner("success", self.last_action)
+
     def library_components(self):
         return self.mod_library.list_components()
 
@@ -675,6 +1272,59 @@ class AppWindow(ctk.CTk):
         self._refresh_main_tabs()
         return len(self.workshop_items)
 
+    def refresh_workshop_cache(self) -> int:
+        self._ensure_workshop_services()
+        self.workshop_items = self.workshop.list_items()
+        self.last_action = f"Refreshed {len(self.workshop_items)} cached Workshop item(s)."
+        self.status_text = self.last_action
+        self.show_banner("info", self.last_action)
+        self._refresh_main_tabs()
+        return len(self.workshop_items)
+
+    def remove_workshop_cache_entries(self, workshop_ids: list[str], *, refresh: bool = True) -> int:
+        self._ensure_workshop_services()
+        ids = [str(value).strip() for value in workshop_ids if str(value).strip()]
+        if not ids:
+            self.notify_warning("No Workshop Items", "Select one or more Workshop cache entries first.", popup=False)
+            return 0
+        if not self.confirm_action(
+            "bulk",
+            "Forget Workshop Cache Entries",
+            "Forget these Workshop cache entries?\n\n"
+            + "\n".join(ids[:30])
+            + ("\n..." if len(ids) > 30 else "")
+            + "\n\nMatching Active Load Order entries will also be removed."
+            + "\nSteam Workshop folders, SteamCMD files, and .pak files will not be deleted.",
+        ):
+            return 0
+        removed = self.workshop.remove_ids(ids)
+        id_set = set(ids)
+        before_active = len(self.active_mods)
+        self.active_mods = [entry for entry in self.active_mods if entry.workshop_id not in id_set]
+        removed_active = before_active - len(self.active_mods)
+        if removed_active:
+            self.save_active_mods()
+        self.workshop_items = self.workshop.list_items()
+        self.last_action = (
+            f"Removed {removed} Workshop cache entr{'y' if removed == 1 else 'ies'} and "
+            f"{removed_active} matching active entr{'y' if removed_active == 1 else 'ies'}. Workshop files were not deleted."
+        )
+        self.status_text = self.last_action
+        self.show_banner("success" if removed else "info", self.last_action)
+        self.record_activity("workshop cache remove", "completed", target=", ".join(ids), details=self.last_action)
+        if refresh:
+            self._refresh_main_tabs()
+        return removed
+
+    def remove_all_workshop_cache_entries(self) -> int:
+        self._ensure_workshop_services()
+        return self.remove_workshop_cache_entries([item.workshop_id for item in self.workshop_items])
+
+    def remove_missing_workshop_cache_entries(self) -> int:
+        self._ensure_workshop_services()
+        ids = [item.workshop_id for item in self.workshop_items if item.status == WORKSHOP_STATUS_MISSING]
+        return self.remove_workshop_cache_entries(ids)
+
     def cancel_workshop_scan(self) -> None:
         self.workshop_scan_cancel_requested = True
         self.status_text = "Workshop scan cancel requested."
@@ -686,6 +1336,9 @@ class AppWindow(ctk.CTk):
 
     def update_selected_workshop_item(self, workshop_id: str) -> None:
         self._start_workshop_steamcmd([workshop_id], action_label="Update Selected")
+
+    def update_selected_workshop_items(self, workshop_ids: list[str]) -> None:
+        self._start_workshop_steamcmd(workshop_ids, action_label="Update Selected")
 
     def update_all_downloaded_workshop_items(self) -> None:
         self._ensure_workshop_services()
@@ -818,17 +1471,89 @@ class AppWindow(ctk.CTk):
             )
             return False
         entry = active_entry_from_workshop_item(item)
-        existing = {_entry_key(active.value) for active in self.active_mods}
-        if _entry_key(entry.value) in existing:
-            self.notify_info("Already Active", "That Workshop pak is already in Active Mods.")
+        if not self._add_active_entry(entry, quiet=False):
             return False
-        self.active_mods.append(entry)
         self.save_active_mods()
         self.last_action = f"Added Workshop {workshop_id} to Active Mods."
         self.status_text = self.last_action
         self.show_banner("success", self.last_action)
         self._refresh_main_tabs()
         return True
+
+    def _add_active_entry(self, entry: ActiveModEntry, *, quiet: bool) -> bool:
+        entry_key = _active_entry_identity(entry)
+        existing = {_active_entry_identity(active) for active in self.active_mods}
+        if entry_key in existing:
+            if not quiet:
+                self.notify_info("Already Active", "That mod is already in Active Load Order.")
+            return False
+        self.active_mods.append(entry)
+        return True
+
+    def _active_entries_from_library_rows(self, rows: list[tuple[str, str]], *, warn: bool) -> list[ActiveModEntry]:
+        self._ensure_workshop_services()
+        entries: list[ActiveModEntry] = []
+        warnings: list[str] = []
+        for kind, value in rows:
+            if kind == "component":
+                component = self.mod_library.component_by_id(value)
+                if component is None:
+                    warnings.append(f"Library component missing: {value}")
+                    continue
+                entries.append(component_to_active_entry(component))
+            elif kind == "workshop":
+                item = self.workshop_cache.get(value) if self.workshop_cache else None
+                if item is None:
+                    warnings.append(f"Workshop item missing from cache: {value}")
+                    continue
+                if item.status != WORKSHOP_STATUS_DOWNLOADED:
+                    warnings.append(f"Workshop {value} is not downloaded. Download/update it before target sync.")
+                    continue
+                if len(item.pak_paths) != 1:
+                    warnings.append(f"Workshop {value} has {len(item.pak_paths)} pak file(s). Select a single pak/component first.")
+                    continue
+                entries.append(active_entry_from_workshop_item(item))
+        if warn and warnings:
+            self.notify_warning("Some Mods Need Attention", "\n".join(warnings), popup=False)
+        return entries
+
+    def link_active_indices_to_workshop_id(self, indices: list[int]) -> int:
+        entries = selected_active_entries(self.active_mods, indices)
+        if not entries:
+            self.notify_warning("No Active Mods Selected", "Select one or more active mods to link.", popup=False)
+            return 0
+        raw_value = simpledialog.askstring("Link Workshop ID", "Workshop ID or URL:", parent=self)
+        if not raw_value:
+            return 0
+        parsed = parse_workshop_ids(raw_value)
+        if len(parsed.ids) != 1 or parsed.invalid_tokens:
+            self.notify_warning(
+                "Workshop ID Invalid",
+                "Enter exactly one Steam Workshop ID or URL.",
+                popup=False,
+            )
+            return 0
+        self._ensure_workshop_services()
+        workshop_id = parsed.ids[0]
+        item = self.workshop_cache.get(workshop_id) if self.workshop_cache else None
+        changed = 0
+        for entry in entries:
+            if entry.workshop_id == workshop_id:
+                continue
+            entry.workshop_id = workshop_id
+            if item:
+                entry.display_name = workshop_display_name(item)
+            changed += 1
+        if not changed:
+            self.notify_info("Workshop Already Linked", f"Selected entries already link to Workshop {workshop_id}.")
+            return 0
+        self.save_active_mods()
+        self.last_action = f"Linked {changed} active mod(s) to Workshop {workshop_id}."
+        self.status_text = self.last_action
+        self.show_banner("success", self.last_action)
+        self.record_activity("workshop link", "completed", target=workshop_id, details=f"{changed} active mod(s)")
+        self._refresh_main_tabs()
+        return changed
 
     def copy_ordered_workshop_ids(self) -> int:
         ids = [entry.workshop_id for entry in self.active_mods if entry.workshop_id]
@@ -875,11 +1600,61 @@ class AppWindow(ctk.CTk):
         self._refresh_main_tabs(selected_mod_index=new_index)
         return new_index
 
+    def move_active_mods(self, indices: list[int], delta: int) -> list[int]:
+        selected = {index for index in indices if 0 <= index < len(self.active_mods)}
+        if not selected or delta == 0:
+            return sorted(selected)
+        if delta < 0:
+            for index in range(1, len(self.active_mods)):
+                if index in selected and index - 1 not in selected:
+                    self.active_mods[index - 1], self.active_mods[index] = self.active_mods[index], self.active_mods[index - 1]
+                    selected.remove(index)
+                    selected.add(index - 1)
+        else:
+            for index in range(len(self.active_mods) - 2, -1, -1):
+                if index in selected and index + 1 not in selected:
+                    self.active_mods[index + 1], self.active_mods[index] = self.active_mods[index], self.active_mods[index + 1]
+                    selected.remove(index)
+                    selected.add(index + 1)
+        self.save_active_mods()
+        self.status_text = f"Moved {len(selected)} selected active mod(s)."
+        self.show_banner("info", self.status_text)
+        self._refresh_main_tabs()
+        return sorted(selected)
+
+    def move_active_mods_to_edge(self, indices: list[int], *, to_top: bool) -> list[int]:
+        reordered, moved = move_items_to_edge(self.active_mods, indices, to_top=to_top)
+        if not moved:
+            return []
+        self.active_mods = reordered
+        self.save_active_mods()
+        edge = "top" if to_top else "bottom"
+        self.status_text = f"Moved {len(moved)} selected active mod(s) to the {edge}."
+        self.show_banner("info", self.status_text)
+        self._refresh_main_tabs()
+        return moved
+
+    def move_active_mods_to_index(self, indices: list[int], target_index: int) -> list[int]:
+        reordered, moved = move_items_to_index(self.active_mods, indices, target_index)
+        if not moved:
+            return []
+        self.active_mods = reordered
+        self.save_active_mods()
+        self.status_text = f"Moved {len(moved)} selected active mod(s)."
+        self.show_banner("info", self.status_text)
+        self._refresh_main_tabs()
+        return moved
+
     def preview_apply_modlist(self, target: str) -> None:
         if not self.active_mods:
             self.notify_warning("No Active Mods", "Add or import mods before applying a modlist.")
             return
-        plans = build_apply_plans(self.paths, target, self.active_mods)
+        plans = build_apply_plans(
+            self.paths,
+            target,
+            self.active_mods,
+            target_apply_modes=self.target_apply_modes(),
+        )
         if not plans:
             self.notify_error("No Target", "No target was selected.")
             return
@@ -905,9 +1680,14 @@ class AppWindow(ctk.CTk):
         self._refresh_main_tabs()
 
     def parity_summary(self) -> str:
+        if not self.dedicated_server_features_enabled():
+            enabled = len([entry for entry in self.active_mods if entry.enabled])
+            return f"Client-only mode ({enabled} enabled mod(s))."
         return compare_client_server(self.paths).summary
 
     def dedicated_server_status(self) -> ServerProcessStatus:
+        if not self.dedicated_server_features_enabled():
+            return ServerProcessStatus(processes=[])
         return self.server_process.status()
 
     def dedicated_server_config(self) -> ServerConfigSnapshot:
@@ -917,6 +1697,13 @@ class AppWindow(ctk.CTk):
         return read_server_log_snapshot(self.paths)
 
     def preview_server_config_edit(self, edit: ServerConfigEdit) -> None:
+        if not self.dedicated_server_features_enabled():
+            self.notify_warning(
+                "Dedicated Server Disabled",
+                "Enable dedicated-server features in Settings before editing dedicated server config.",
+                popup=False,
+            )
+            return
         plan = build_server_config_edit_plan(
             self.paths,
             edit,
@@ -924,7 +1711,26 @@ class AppWindow(ctk.CTk):
         )
         self._show_server_config_preview(plan)
 
+    def launch_client_game_from_ui(self) -> None:
+        result = launch_client_game(self.paths)
+        self.last_action = result.message
+        self.status_text = result.message
+        self.record_activity("client launch", "requested" if result.started else "not started", target="client", details=result.message)
+        self.show_banner("success" if result.started else "warning", result.message)
+        if result.started:
+            self.notify_info("Conan Exiles Launch Requested", f"{result.message}\nPID: {result.pid}")
+        else:
+            self.notify_warning("Conan Exiles Not Started", result.message)
+        self._refresh_main_tabs()
+
     def launch_dedicated_server_from_ui(self) -> None:
+        if not self.dedicated_server_features_enabled():
+            self.notify_warning(
+                "Dedicated Server Disabled",
+                "Dedicated-server features are disabled. Enable them in Settings before starting a server.",
+                popup=False,
+            )
+            return
         result = launch_dedicated_server(
             self.paths,
             launch_args=self.preferences.dedicated_server_launch_args,
@@ -1033,7 +1839,7 @@ class AppWindow(ctk.CTk):
     def _show_server_config_preview(self, plan: ServerConfigEditPlan) -> None:
         window = ctk.CTkToplevel(self)
         window.title("Preview Server Config Changes")
-        window.geometry("920x660")
+        self.center_window(window, 920, 660)
         window.minsize(760, 500)
         window.grid_columnconfigure(0, weight=1)
         window.grid_rowconfigure(1, weight=1)
@@ -1104,7 +1910,7 @@ class AppWindow(ctk.CTk):
     def _show_apply_preview(self, plans: list[ModlistTargetPlan]) -> None:
         window = ctk.CTkToplevel(self)
         window.title("Preview Modlist Apply")
-        window.geometry("860x620")
+        self.center_window(window, 860, 620)
         window.minsize(720, 480)
         window.grid_columnconfigure(0, weight=1)
         window.grid_rowconfigure(1, weight=1)
@@ -1158,7 +1964,7 @@ class AppWindow(ctk.CTk):
     ) -> None:
         window = ctk.CTkToplevel(self)
         window.title("Preview Hosted Upload")
-        window.geometry("900x660")
+        self.center_window(window, 900, 660)
         window.minsize(760, 500)
         window.grid_columnconfigure(0, weight=1)
         window.grid_rowconfigure(1, weight=1)
@@ -1229,7 +2035,7 @@ class AppWindow(ctk.CTk):
         warnings = profile_entry_warnings(profile.entries, self.workshop_items)
         window = ctk.CTkToplevel(self)
         window.title("Preview Profile Load")
-        window.geometry("860x620")
+        self.center_window(window, 860, 620)
         window.minsize(720, 480)
         window.grid_columnconfigure(0, weight=1)
         window.grid_rowconfigure(1, weight=1)
@@ -1275,19 +2081,13 @@ class AppWindow(ctk.CTk):
         window.grab_set()
 
     def _apply_profile_load(self, profile: ModProfile, window: ctk.CTkToplevel) -> None:
-        self.active_mods = list(profile.entries)
-        self.save_active_mods()
-        self.last_action = f"Loaded mod profile {profile.name}."
-        self.status_text = self.last_action
-        self.show_banner("success", self.last_action)
-        self.record_activity("profile load", "loaded", target=", ".join(profile.target_coverage), details=profile.name)
+        self.load_mod_profile(profile.name)
         window.destroy()
-        self._refresh_main_tabs()
 
     def _show_snapshot_restore_preview(self, record: BackupRecord) -> None:
         window = ctk.CTkToplevel(self)
         window.title("Preview Snapshot Restore")
-        window.geometry("780x520")
+        self.center_window(window, 780, 520)
         window.minsize(680, 420)
         window.grid_columnconfigure(0, weight=1)
         window.grid_rowconfigure(1, weight=1)
@@ -1349,7 +2149,7 @@ class AppWindow(ctk.CTk):
     def _show_vanilla_restore_preview(self, plans: list[ModlistTargetPlan]) -> None:
         window = ctk.CTkToplevel(self)
         window.title("Preview Vanilla Restore")
-        window.geometry("860x620")
+        self.center_window(window, 860, 620)
         window.minsize(720, 480)
         window.grid_columnconfigure(0, weight=1)
         window.grid_rowconfigure(1, weight=1)
@@ -1394,6 +2194,68 @@ class AppWindow(ctk.CTk):
         window.transient(self)
         window.grab_set()
 
+    def _show_selected_uninstall_preview(
+        self,
+        plans: list[ModlistTargetPlan],
+        *,
+        quarantine_target_files: bool = False,
+    ) -> None:
+        window = ctk.CTkToplevel(self)
+        window.title("Preview Target Uninstall")
+        self.center_window(window, 900, 660)
+        window.minsize(760, 500)
+        window.grid_columnconfigure(0, weight=1)
+        window.grid_rowconfigure(1, weight=1)
+        ctk.CTkLabel(
+            window,
+            text="Preview Target Uninstall",
+            font=self.ui_font("title"),
+            text_color="#f1e7d0",
+        ).grid(row=0, column=0, sticky="w", padx=14, pady=(14, 6))
+        text = ctk.CTkTextbox(
+            window,
+            font=self.ui_font("mono"),
+            fg_color="#101010",
+            text_color="#f1e7d0",
+            border_width=1,
+            border_color="#3a3028",
+            wrap="none",
+        )
+        text.grid(row=1, column=0, sticky="nsew", padx=14, pady=8)
+        text.insert("1.0", preview_selected_uninstall_text(plans, quarantine_target_files=quarantine_target_files))
+        text.configure(state="disabled")
+        controls = ctk.CTkFrame(window, fg_color="transparent")
+        controls.grid(row=2, column=0, sticky="e", padx=14, pady=(4, 14))
+        ctk.CTkButton(
+            controls,
+            text="Cancel",
+            width=100,
+            height=self.ui_tokens.compact_button_height,
+            fg_color="#3a3028",
+            hover_color="#4a3c31",
+            command=window.destroy,
+        ).grid(row=0, column=0, padx=(0, 8))
+        ctk.CTkButton(
+            controls,
+            text="Apply",
+            width=120,
+            height=self.ui_tokens.compact_button_height,
+            fg_color="#7d4429",
+            hover_color="#925333",
+            command=lambda: self._apply_selected_uninstall(plans, window, quarantine_target_files=False),
+        ).grid(row=0, column=1, padx=(0, 8))
+        ctk.CTkButton(
+            controls,
+            text="Apply + Quarantine Copies",
+            width=210,
+            height=self.ui_tokens.compact_button_height,
+            fg_color="#5d3424",
+            hover_color="#70402c",
+            command=lambda: self._apply_selected_uninstall(plans, window, quarantine_target_files=True),
+        ).grid(row=0, column=2)
+        window.transient(self)
+        window.grab_set()
+
     def _apply_vanilla_restore(self, plans: list[ModlistTargetPlan], window: ctk.CTkToplevel) -> None:
         result = apply_vanilla_restore(plans, self.backup)
         labels = [plan.label for plan in plans if plan.modlist_path != Path()]
@@ -1408,6 +2270,44 @@ class AppWindow(ctk.CTk):
         self.record_activity("vanilla restore", "completed", target=", ".join(labels), details=self.last_action)
         window.destroy()
         self.notify_info("Vanilla Restore Applied", self.last_action)
+        self._refresh_main_tabs()
+
+    def _apply_selected_uninstall(
+        self,
+        plans: list[ModlistTargetPlan],
+        window: ctk.CTkToplevel,
+        *,
+        quarantine_target_files: bool,
+    ) -> None:
+        if quarantine_target_files and not self.confirm_action(
+            "destructive",
+            "Quarantine Target Copies",
+            "Move manager-owned target copies out of the selected target Mods folder?\n\n"
+            "Original imports, app library files, external links, and Steam Workshop cache folders are not touched.",
+        ):
+            return
+        result = apply_selected_uninstall_plans(
+            plans,
+            self.backup,
+            quarantine_target_files=quarantine_target_files,
+        )
+        if any(plan.target == TARGET_DEDICATED_SERVER for plan in plans) and result.written_paths:
+            self.server_runtime.mark_restart_recommended("Dedicated Server modlist changed.")
+        labels = [plan.label for plan in plans if plan.modlist_path != Path()]
+        self.last_action = (
+            f"Uninstalled selected mods from {', '.join(labels)}; "
+            f"wrote {len(result.written_paths)} modlist file(s), "
+            f"quarantined {len(result.quarantined_paths)} target file(s), "
+            f"created {len(result.backup_ids)} backup(s)."
+        )
+        self.status_text = self.last_action
+        self.show_banner("success", self.last_action)
+        self.record_activity("target uninstall", "completed", target=", ".join(labels), details=self.last_action)
+        window.destroy()
+        if result.warnings:
+            self.notify_warning("Target Uninstall Applied With Warnings", self.last_action + "\n\n" + "\n".join(result.warnings))
+        else:
+            self.notify_info("Target Uninstall Applied", self.last_action)
         self._refresh_main_tabs()
 
     def _apply_previewed_modlists(self, plans: list[ModlistTargetPlan], window: ctk.CTkToplevel) -> None:
@@ -1460,6 +2360,14 @@ def _entry_key(value: str) -> str:
     return str(value or "").strip().replace("\\", "/").casefold()
 
 
+def _active_entry_identity(entry: ActiveModEntry) -> str:
+    if entry.workshop_id:
+        return f"workshop:{entry.workshop_id}"
+    if entry.component_id:
+        return f"component:{entry.component_id}"
+    return f"value:{_entry_key(entry.value)}"
+
+
 def _preview_text(plans: list[ModlistTargetPlan]) -> str:
     sections: list[str] = []
     for plan in plans:
@@ -1469,6 +2377,7 @@ def _preview_text(plans: list[ModlistTargetPlan]) -> str:
             f"Target: {plan.label}",
             f"modlist.txt: {plan.modlist_path if str(plan.modlist_path) != '.' else 'not configured'}",
             f"Mods folder: {plan.mods_dir if str(plan.mods_dir) != '.' else 'not configured'}",
+            f"Apply mode: {'copy/sync to target Mods folder' if plan.apply_mode == APPLY_MODE_COPY else 'write source paths directly'}",
             f"Create Mods folder: {'yes' if plan.creates_mods_dir else 'no'}",
             f"Backup existing modlist: {'yes' if plan.backup_needed else 'no'}",
             "",
@@ -1494,8 +2403,22 @@ def _preview_text(plans: list[ModlistTargetPlan]) -> str:
                     ],
                 ]
             )
+        elif plan.apply_mode == APPLY_MODE_SOURCE:
+            lines.extend(["", "Target file copies:", "(none; modlist.txt will reference source paths directly)"])
         sections.append("\n".join(lines))
     return "\n\n" + ("-" * 72 + "\n\n").join(sections)
+
+
+def _validation_label(path: Path | None, validator, label: str) -> str:
+    if not path:
+        return f"{label}: not set"
+    return f"{label}: valid" if validator(path) else f"{label}: invalid or not found"
+
+
+def _folder_validation_label(path: Path | None, label: str) -> str:
+    if not path:
+        return f"{label}: not set"
+    return f"{label}: exists" if path.is_dir() else f"{label}: not found"
 
 
 def _hosted_preview_text(plan: HostedUploadPlan, *, upload_paks: bool) -> str:

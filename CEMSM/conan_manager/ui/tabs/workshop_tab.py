@@ -69,12 +69,13 @@ class WorkshopTab(ctk.CTkFrame):
         buttons = ctk.CTkFrame(input_frame, fg_color="transparent")
         buttons.grid(row=0, column=1, sticky="ns", padx=(0, 10), pady=10)
         self._button(buttons, "Add IDs", self._add_ids, row=0)
-        self._scan_button = self._button(buttons, "Scan Workshop", self._scan, row=1)
-        self._button(buttons, "Cancel Scan", self.app.cancel_workshop_scan, row=2)
-        self._download_missing_button = self._button(buttons, "Download Missing", self._download_missing, row=3)
-        self._update_all_button = self._button(buttons, "Update Downloaded", self._update_all_downloaded, row=4)
-        self._cancel_steamcmd_button = self._button(buttons, "Cancel SteamCMD", self.app.cancel_workshop_steamcmd, row=5)
-        self._button(buttons, "SteamCMD Settings", lambda: self.app.select_tab("Settings"), row=6)
+        self._button(buttons, "Refresh Cache", self._refresh_cache, row=1)
+        self._scan_button = self._button(buttons, "Scan Workshop", self._scan, row=2)
+        self._button(buttons, "Cancel Scan", self.app.cancel_workshop_scan, row=3)
+        self._download_missing_button = self._button(buttons, "Download Missing", self._download_missing, row=4)
+        self._update_all_button = self._button(buttons, "Update Downloaded", self._update_all_downloaded, row=5)
+        self._cancel_steamcmd_button = self._button(buttons, "Cancel SteamCMD", self.app.cancel_workshop_steamcmd, row=6)
+        self._button(buttons, "SteamCMD Settings", lambda: self.app.select_tab("Settings"), row=7)
 
         list_frame = ctk.CTkFrame(self, fg_color="#191715", border_width=1, border_color="#3a3028")
         list_frame.grid(row=2, column=0, sticky="nsew", padx=10, pady=6)
@@ -82,6 +83,8 @@ class WorkshopTab(ctk.CTkFrame):
         list_frame.grid_rowconfigure(0, weight=1)
         self._listbox = tk.Listbox(
             list_frame,
+            selectmode=tk.EXTENDED,
+            exportselection=False,
             bg="#101010",
             fg="#f1e7d0",
             selectbackground="#7d4429",
@@ -92,10 +95,18 @@ class WorkshopTab(ctk.CTkFrame):
             font=("Cascadia Mono", self.app.ui_tokens.mono),
         )
         self._listbox.grid(row=0, column=0, sticky="nsew", padx=8, pady=8)
-        scrollbar = tk.Scrollbar(list_frame, orient="vertical", command=self._listbox.yview)
+        scrollbar = ctk.CTkScrollbar(
+            list_frame,
+            orientation="vertical",
+            command=self._listbox.yview,
+            fg_color="#101010",
+            button_color="#3a3028",
+            button_hover_color="#5d3424",
+        )
         scrollbar.grid(row=0, column=1, sticky="ns", pady=8)
         self._listbox.configure(yscrollcommand=scrollbar.set)
         self._listbox.bind("<<ListboxSelect>>", self._on_select)
+        self._listbox.bind("<Button-3>", self._show_context_menu)
 
         footer = ctk.CTkFrame(self, fg_color="#101010")
         footer.grid(row=3, column=0, sticky="ew", padx=10, pady=(4, 10))
@@ -111,8 +122,8 @@ class WorkshopTab(ctk.CTkFrame):
         self._detail_label.grid(row=0, column=0, sticky="ew")
         ctk.CTkButton(
             footer,
-            text="Add Selected to Active",
-            width=180,
+            text="Activate",
+            width=120,
             height=self.app.ui_tokens.compact_button_height,
             font=self.app.ui_font("body"),
             fg_color="#7d4429",
@@ -122,13 +133,43 @@ class WorkshopTab(ctk.CTkFrame):
         ctk.CTkButton(
             footer,
             text="Update Selected",
-            width=145,
+            width=140,
             height=self.app.ui_tokens.compact_button_height,
             font=self.app.ui_font("body"),
             fg_color="#3a3028",
             hover_color="#4a3c31",
             command=self._update_selected,
         ).grid(row=0, column=2, padx=(0, 8))
+        ctk.CTkButton(
+            footer,
+            text="Forget Selected",
+            width=145,
+            height=self.app.ui_tokens.compact_button_height,
+            font=self.app.ui_font("body"),
+            fg_color="#3a3028",
+            hover_color="#4a3c31",
+            command=self._forget_selected,
+        ).grid(row=0, column=3, padx=(0, 8))
+        ctk.CTkButton(
+            footer,
+            text="Forget Missing",
+            width=135,
+            height=self.app.ui_tokens.compact_button_height,
+            font=self.app.ui_font("body"),
+            fg_color="#3a3028",
+            hover_color="#4a3c31",
+            command=self._forget_missing,
+        ).grid(row=0, column=4, padx=(0, 8))
+        ctk.CTkButton(
+            footer,
+            text="Forget All",
+            width=110,
+            height=self.app.ui_tokens.compact_button_height,
+            font=self.app.ui_font("body"),
+            fg_color="#3a3028",
+            hover_color="#4a3c31",
+            command=self._forget_all,
+        ).grid(row=0, column=5, padx=(0, 8))
         ctk.CTkButton(
             footer,
             text="Copy Active IDs",
@@ -138,7 +179,7 @@ class WorkshopTab(ctk.CTkFrame):
             fg_color="#3a3028",
             hover_color="#4a3c31",
             command=self._copy_active_ids,
-        ).grid(row=0, column=3)
+        ).grid(row=0, column=6)
 
     def _button(self, parent, text: str, command, *, row: int) -> ctk.CTkButton:
         button = ctk.CTkButton(
@@ -183,6 +224,30 @@ class WorkshopTab(ctk.CTkFrame):
         self._selected_index = int(selection[0]) if selection else None
         self._refresh_detail()
 
+    def _show_context_menu(self, event) -> None:
+        index = self._listbox.nearest(event.y)
+        if not (0 <= index < len(self.app.workshop_items)):
+            return
+        if index not in {int(value) for value in self._listbox.curselection()}:
+            self._listbox.selection_clear(0, tk.END)
+            self._listbox.selection_set(index)
+        self._selected_index = index
+        self._refresh_detail()
+        item = self.app.workshop_items[index]
+        menu = tk.Menu(self, tearoff=0, bg="#191715", fg="#f1e7d0", activebackground="#7d4429")
+        menu.add_command(label="Add to Active Load Order", command=self._add_selected_to_active)
+        menu.add_command(label="Download / Update with SteamCMD", command=self._update_selected)
+        menu.add_command(label="Copy Workshop ID", command=lambda: self.app.copy_workshop_id(item.workshop_id))
+        menu.add_command(label="Open Workshop Folder", command=lambda: self.app.open_path_in_shell(item.folder_path))
+        menu.add_separator()
+        menu.add_command(label="Forget Cache Entry", command=self._forget_selected)
+        menu.add_command(label="Forget Missing Downloads", command=self._forget_missing)
+        menu.add_command(label="Forget All Cached", command=self._forget_all)
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+
     def _selected_item(self) -> WorkshopItem | None:
         if self._selected_index is None:
             return None
@@ -190,6 +255,15 @@ class WorkshopTab(ctk.CTkFrame):
         if 0 <= self._selected_index < len(items):
             return items[self._selected_index]
         return None
+
+    def _selected_items(self) -> list[WorkshopItem]:
+        items = self.app.workshop_items
+        selected: list[WorkshopItem] = []
+        for raw_index in self._listbox.curselection():
+            index = int(raw_index)
+            if 0 <= index < len(items):
+                selected.append(items[index])
+        return selected
 
     def _refresh_detail(self) -> None:
         item = self._selected_item()
@@ -226,20 +300,37 @@ class WorkshopTab(ctk.CTkFrame):
             self._scan_button.configure(state="normal", text="Scan Workshop")
         self.app.notify_info("Workshop Scan Complete", f"Scanned {count} Workshop item(s).")
 
+    def _refresh_cache(self) -> None:
+        count = self.app.refresh_workshop_cache()
+        self.app.notify_info("Workshop Cache Refreshed", f"Refreshed {count} cached Workshop item(s).")
+
     def _add_selected_to_active(self) -> None:
-        item = self._selected_item()
-        if item is None:
-            return
-        self.app.add_workshop_item_to_active(item.workshop_id)
+        items = self._selected_items()
+        if not items:
+            item = self._selected_item()
+            items = [item] if item else []
+        for item in items:
+            self.app.add_workshop_item_to_active(item.workshop_id)
 
     def _download_missing(self) -> None:
         self.app.download_missing_workshop_items()
 
     def _update_selected(self) -> None:
-        item = self._selected_item()
-        if item is None:
-            return
-        self.app.update_selected_workshop_item(item.workshop_id)
+        items = self._selected_items()
+        if not items:
+            item = self._selected_item()
+            items = [item] if item else []
+        self.app.update_selected_workshop_items([item.workshop_id for item in items])
+
+    def _forget_selected(self) -> None:
+        ids = [item.workshop_id for item in self._selected_items()]
+        self.app.remove_workshop_cache_entries(ids)
+
+    def _forget_missing(self) -> None:
+        self.app.remove_missing_workshop_cache_entries()
+
+    def _forget_all(self) -> None:
+        self.app.remove_all_workshop_cache_entries()
 
     def _update_all_downloaded(self) -> None:
         self.app.update_all_downloaded_workshop_items()

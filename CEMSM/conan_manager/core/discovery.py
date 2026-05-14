@@ -30,6 +30,7 @@ def discover_all(
     extra_steamapps_dirs: Iterable[Path] | None = None,
     known_client_root: Optional[Path] = None,
     known_dedicated_server_root: Optional[Path] = None,
+    known_workshop_content_dir: Optional[Path] = None,
 ) -> ConanAppPaths:
     steamapps_dirs = discover_steamapps_dirs(extra_steamapps_dirs=extra_steamapps_dirs)
     client_manifest = find_app_manifest(CLIENT_APP_ID, steamapps_dirs)
@@ -51,7 +52,10 @@ def discover_all(
             validate_dedicated_server_root,
         )
 
-    workshop_dir = discover_workshop_content_dir(steamapps_dirs, client_manifest=client_manifest)
+    workshop_dir = Path(known_workshop_content_dir) if known_workshop_content_dir else discover_workshop_content_dir(
+        steamapps_dirs,
+        client_manifest=client_manifest,
+    )
 
     paths = ConanAppPaths(
         client_root=client_root,

@@ -17,7 +17,7 @@ foreach ($File in $RootFiles) {
 }
 
 $AppDestination = New-Item -ItemType Directory -Path (Join-Path $DestinationPath.FullName "CEMSM") -Force
-$ExcludedNames = @("data", "backups", "logs", "steamcmd", "tmp", "build", "dist", ".pytest_cache", "__pycache__")
+$ExcludedNames = @("data", "backups", "logs", "steamcmd", "tmp", "build", "dist", "release", ".pytest_cache", "__pycache__")
 
 Get-ChildItem -LiteralPath (Join-Path $RepoRoot "CEMSM") -Force | Where-Object {
     $ExcludedNames -notcontains $_.Name

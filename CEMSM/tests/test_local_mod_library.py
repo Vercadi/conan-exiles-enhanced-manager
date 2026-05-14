@@ -10,6 +10,7 @@ from conan_manager.core.local_mod_library import (
     component_to_active_entry,
     duplicate_component_keys,
     group_pak_files,
+    normalize_mod_display_name,
     target_sync_labels,
 )
 
@@ -96,6 +97,23 @@ def test_zip_inspection_one_mod_archive(tmp_path) -> None:
     assert imported[0].companion_paths[0].suffix == ".ucas"
 
 
+def test_display_name_normalization_strips_nexus_suffix_and_camel_case() -> None:
+    name = normalize_mod_display_name("HeroicThralls v2.0-150-2-0-1777953219.zip")
+
+    assert name == "Heroic Thralls v2.0"
+
+
+def test_archive_import_stores_normalized_source_name(tmp_path) -> None:
+    archive_path = tmp_path / "HeroicThralls v2.0-150-2-0-1777953219.zip"
+    with zipfile.ZipFile(archive_path, "w") as archive:
+        archive.writestr("HeroicThralls_v2.0/HeroicThralls.pak", b"pak")
+    store = LocalModLibraryStore(tmp_path / "data")
+
+    store.import_archive(archive_path)
+
+    assert store.list_sources()[0].display_name == "Heroic Thralls v2.0"
+
+
 def test_zip_inspection_multi_mod_archive(tmp_path) -> None:
     archive_path = tmp_path / "multi.zip"
     with zipfile.ZipFile(archive_path, "w") as archive:
@@ -154,6 +172,21 @@ def test_reimporting_same_pak_does_not_create_duplicate_record(tmp_path) -> None
     assert len(first) == 1
     assert second == []
     assert len(store.list_components()) == 1
+
+
+def test_remove_library_component_forgets_record_without_deleting_managed_file(tmp_path) -> None:
+    pak = tmp_path / "Example.pak"
+    pak.write_bytes(b"pak")
+    store = LocalModLibraryStore(tmp_path / "data")
+    component = store.import_pak_files([pak])[0]
+    managed = component.primary_pak_path
+
+    removed = store.remove_components([component.component_id])
+
+    assert removed == 1
+    assert store.list_components() == []
+    assert store.list_sources() == []
+    assert managed.is_file()
 
 
 def test_component_to_active_entry_preserves_companion_paths(tmp_path) -> None:

@@ -66,6 +66,8 @@ class ProfilesTab(ctk.CTkFrame):
         profiles.grid_rowconfigure(1, weight=1)
         self._profile_list = self._listbox(profiles, row=1)
         self._profile_list.bind("<<ListboxSelect>>", self._on_profile_select)
+        self._profile_list.bind("<Double-Button-1>", self._load_profile)
+        self._profile_list.bind("<Button-3>", self._show_profile_context_menu)
         self._entry(profiles, "Profile Name", self._profile_name_var, row=2)
         self._entry(profiles, "Rename To", self._profile_rename_var, row=3)
         ctk.CTkLabel(
@@ -100,13 +102,14 @@ class ProfilesTab(ctk.CTkFrame):
         self._profile_notes.grid(row=5, column=0, columnspan=2, sticky="ew", padx=12, pady=6)
         profile_buttons = ctk.CTkFrame(profiles, fg_color="transparent")
         profile_buttons.grid(row=6, column=0, columnspan=2, sticky="ew", padx=12, pady=(2, 10))
-        for col in range(5):
+        for col in range(6):
             profile_buttons.grid_columnconfigure(col, weight=1)
         self._button(profile_buttons, "Save Current", self._save_current_profile, column=0, primary=True)
-        self._button(profile_buttons, "Preview Load", self._preview_load_profile, column=1)
-        self._button(profile_buttons, "Duplicate", self._duplicate_profile, column=2)
-        self._button(profile_buttons, "Rename", self._rename_profile, column=3)
-        self._button(profile_buttons, "Delete", self._delete_profile, column=4)
+        self._button(profile_buttons, "Load Profile", self._load_profile, column=1, primary=True)
+        self._button(profile_buttons, "Save Coverage", self._update_coverage, column=2)
+        self._button(profile_buttons, "Duplicate", self._duplicate_profile, column=3)
+        self._button(profile_buttons, "Rename", self._rename_profile, column=4)
+        self._button(profile_buttons, "Delete", self._delete_profile, column=5)
 
         snapshots.grid_rowconfigure(1, weight=1)
         self._snapshot_list = self._listbox(snapshots, row=1)
@@ -321,10 +324,56 @@ class ProfilesTab(ctk.CTkFrame):
         self._profile_name_var.set(profile.name)
         self.app.notify_info("Profile Saved", f"Saved {profile.name}.")
 
-    def _preview_load_profile(self) -> None:
+    def _load_profile(self, _event=None) -> None:
         profile = self._selected_profile()
         if profile:
-            self.app.preview_load_mod_profile(profile.name)
+            self.app.load_mod_profile(profile.name)
+
+    def _update_coverage(self) -> None:
+        profile = self._selected_profile()
+        if not profile:
+            self.app.notify_warning("No Profile Selected", "Select a profile before updating coverage.", popup=False)
+            return
+        self.app.update_mod_profile_coverage(profile.name, self._coverage(), notes=self._notes())
+
+    def _show_profile_context_menu(self, event) -> None:
+        index = self._profile_list.nearest(event.y)
+        if not (0 <= index < len(self.app.named_mod_profiles)):
+            return
+        self._profile_list.selection_clear(0, tk.END)
+        self._profile_list.selection_set(index)
+        self._on_profile_select()
+        profile = self._selected_profile()
+        if not profile:
+            return
+        menu = tk.Menu(self, tearoff=0, bg="#191715", fg="#f1e7d0", activebackground="#7d4429")
+        menu.add_command(label="Load Profile", command=self._load_profile)
+        menu.add_command(label="Save Coverage From Checkboxes", command=self._update_coverage)
+        menu.add_separator()
+        menu.add_command(
+            label="Client Only",
+            command=lambda: self.app.update_mod_profile_coverage(profile.name, [TARGET_CLIENT], notes=self._notes()),
+        )
+        menu.add_command(
+            label="Client + Dedicated Server",
+            command=lambda: self.app.update_mod_profile_coverage(
+                profile.name,
+                [TARGET_CLIENT, TARGET_DEDICATED_SERVER],
+                notes=self._notes(),
+            ),
+        )
+        menu.add_command(
+            label="Client + Hosted",
+            command=lambda: self.app.update_mod_profile_coverage(
+                profile.name,
+                [TARGET_CLIENT, TARGET_HOSTED],
+                notes=self._notes(),
+            ),
+        )
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
 
     def _duplicate_profile(self) -> None:
         profile = self._selected_profile()

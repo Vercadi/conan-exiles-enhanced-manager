@@ -1,5 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""PyInstaller spec for Conan Exiles Enhanced Manager."""
+"""One-file PyInstaller spec for Nexus Mods upload packaging."""
 from __future__ import annotations
 
 import os
@@ -19,9 +19,6 @@ try:
     dnd_datas = collect_data_files("tkinterdnd2")
 except Exception:
     dnd_datas = []
-
-# Runtime folders are intentionally not included in datas:
-# data/, backups/, logs/, steamcmd/, tmp/, and docs/.
 
 a = Analysis(
     ["app.py"],
@@ -44,24 +41,22 @@ pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 exe = EXE(
     pyz,
     a.scripts,
+    a.binaries,
+    a.zipfiles,
+    a.datas,
     [],
-    exclude_binaries=True,
     name="Conan Exiles Enhanced Manager",
-    icon="assets/app_icon.ico",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
     upx=False,
-    console=False,
-)
-
-coll = COLLECT(
-    exe,
-    a.binaries,
-    a.zipfiles,
-    a.datas,
-    strip=False,
-    upx=False,
     upx_exclude=[],
-    name="Conan Exiles Enhanced Manager",
+    runtime_tmpdir=None,
+    console=False,
+    disable_windowed_traceback=False,
+    argv_emulation=False,
+    target_arch=None,
+    codesign_identity=None,
+    entitlements_file=None,
+    icon="assets/app_icon.ico",
 )

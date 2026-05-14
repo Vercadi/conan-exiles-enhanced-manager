@@ -111,6 +111,28 @@ class ProfileStore:
         self._save()
         return renamed
 
+    def update_mod_profile_metadata(
+        self,
+        name: str,
+        *,
+        target_coverage: list[str] | None = None,
+        notes: str | None = None,
+    ) -> ModProfile:
+        source = self._require_mod(name)
+        updated = replace(
+            source,
+            target_coverage=list(target_coverage) if target_coverage is not None else list(source.target_coverage),
+            notes=notes if notes is not None else source.notes,
+            updated_at=utc_timestamp(),
+        ).normalized()
+        self._mod_profiles = [item for item in self._mod_profiles if item.name != name]
+        if updated.name == "Vanilla":
+            self._mod_profiles.insert(0, updated)
+        else:
+            self._mod_profiles.append(updated)
+        self._save()
+        return updated
+
     def delete_mod_profile(self, name: str) -> bool:
         if name == "Vanilla":
             raise ValueError("The Vanilla profile cannot be deleted.")

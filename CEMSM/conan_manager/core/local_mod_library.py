@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import shutil
 import uuid
 import zipfile
@@ -32,7 +33,7 @@ class PakFileGroup:
 
     @property
     def display_name(self) -> str:
-        return self.pak_path.stem
+        return normalize_mod_display_name(self.pak_path.stem)
 
 
 @dataclass(frozen=True)
@@ -78,6 +79,38 @@ class LocalModLibraryStore:
             if component.component_id == component_id:
                 return component
         return None
+
+    def remove_components(self, component_ids: list[str]) -> int:
+        ids = {str(value).strip() for value in component_ids if str(value).strip()}
+        if not ids:
+            return 0
+        before = len(self.state.components)
+        self.state.components = [component for component in self.state.components if component.component_id not in ids]
+        for source in self.state.sources:
+            source.component_ids = [component_id for component_id in source.component_ids if component_id not in ids]
+        self.state.sources = [source for source in self.state.sources if source.component_ids]
+        removed = before - len(self.state.components)
+        if removed:
+            self.save()
+        return removed
+
+    def remove_sources(self, source_ids: list[str]) -> int:
+        ids = {str(value).strip() for value in source_ids if str(value).strip()}
+        if not ids:
+            return 0
+        component_ids = {
+            component_id
+            for source in self.state.sources
+            if source.source_id in ids
+            for component_id in source.component_ids
+        }
+        before_sources = len(self.state.sources)
+        self.state.sources = [source for source in self.state.sources if source.source_id not in ids]
+        self.state.components = [component for component in self.state.components if component.component_id not in component_ids]
+        removed = before_sources - len(self.state.sources)
+        if removed:
+            self.save()
+        return removed
 
     def import_pak_files(self, paths: list[Path], *, link_external: bool = False) -> list[ModComponent]:
         groups = group_pak_files(paths)
@@ -158,7 +191,7 @@ class LocalModLibraryStore:
                 component = ModComponent(
                     component_id=component_id,
                     source_id=source_id,
-                    display_name=candidate.display_name,
+                    display_name=normalize_mod_display_name(candidate.display_name),
                     source_type=SOURCE_ARCHIVE,
                     primary_file=primary,
                     companion_files=companions,
@@ -171,7 +204,7 @@ class LocalModLibraryStore:
         source = ModSource(
             source_id=source_id,
             source_type=SOURCE_ARCHIVE,
-            display_name=archive_path.stem,
+            display_name=normalize_mod_display_name(archive_path.stem),
             original_path=archive_path,
             managed_path=managed_archive,
             component_ids=component_ids,
@@ -269,7 +302,7 @@ def inspect_zip_archive(archive_path: Path) -> ArchiveInspection:
         components.append(
             ArchiveComponentCandidate(
                 component_id=_candidate_id(pak_member),
-                display_name=pak_path.stem,
+                display_name=normalize_mod_display_name(pak_path.stem),
                 pak_member=pak_member,
                 companion_members=companions,
                 variant_group_id=variant_groups.get(pak_member, ""),
@@ -306,6 +339,31 @@ def target_sync_labels(
         if target.is_file() and _same_size(target, component.primary_file.path):
             labels.append(f"Synced to {label}")
     return labels
+
+
+def normalize_mod_display_name(value: str) -> str:
+    text = str(value or "").strip()
+    text = re.sub(r"\.(zip|pak)$", "", text, flags=re.IGNORECASE)
+    text = _strip_nexus_archive_suffix(text)
+    text = text.replace("_", " ")
+    text = re.sub(r"[-]+", " ", text)
+    text = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", text)
+    text = re.sub(r"(?<=[A-Z])(?=[A-Z][a-z])", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text or "Unnamed mod"
+
+
+def _strip_nexus_archive_suffix(value: str) -> str:
+    parts = value.split("-")
+    if len(parts) < 3:
+        return value
+    index = len(parts)
+    while index > 0 and parts[index - 1].isdigit():
+        index -= 1
+    numeric_tail = parts[index:]
+    if len(numeric_tail) >= 2 and len(numeric_tail[-1]) >= 8:
+        return "-".join(parts[:index]).strip("- ") or value
+    return value
 
 
 def _same_size(left: Path, right: Path) -> bool:

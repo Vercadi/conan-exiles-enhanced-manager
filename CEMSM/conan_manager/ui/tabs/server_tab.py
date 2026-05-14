@@ -356,6 +356,22 @@ class ServerTab(ctk.CTkFrame):
             self._value_labels[key] = value
 
     def refresh(self) -> None:
+        if not self.app.dedicated_server_features_enabled():
+            disabled = "Disabled in Settings"
+            for key in self._value_labels:
+                self._set(key, disabled, ok=True)
+            self._status_label.configure(
+                text="Dedicated-server features are disabled. Enable them in Settings and set a server path to use this tab."
+            )
+            self._launch_args_var.set(self.app.preferences.dedicated_server_launch_args)
+            self._log_text.configure(state="normal")
+            self._log_text.delete("1.0", "end")
+            self._log_text.insert(
+                "1.0",
+                "Dedicated-server log/config checks are off. This is normal for client-only setups.",
+            )
+            self._log_text.configure(state="disabled")
+            return
         status = self.app.dedicated_server_status()
         config = self.app.dedicated_server_config()
         logs = self.app.dedicated_server_log_snapshot()

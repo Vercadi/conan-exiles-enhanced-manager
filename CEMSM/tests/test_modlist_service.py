@@ -13,8 +13,9 @@ from conan_manager.core.modlist_service import (
     missing_entries,
     read_modlist,
     restore_latest_modlist,
+    target_install_state_for_entry,
 )
-from conan_manager.models.modlist import TARGET_BOTH, TARGET_CLIENT, ActiveModEntry
+from conan_manager.models.modlist import APPLY_MODE_SOURCE, TARGET_BOTH, TARGET_CLIENT, ActiveModEntry
 
 from .conftest import create_fake_conan_library
 
@@ -183,6 +184,33 @@ def test_apply_skips_copy_when_source_is_already_target_file(tmp_path) -> None:
     assert paths.client_modlist_path.read_text(encoding="utf-8") == "AlreadyThere.pak\n"
     assert result.copied_paths == []
     assert backup.list_backups(category="mods", source_path=source) == []
+
+
+def test_source_path_apply_mode_writes_original_paths_without_copying(tmp_path) -> None:
+    steamapps = create_fake_conan_library(tmp_path)
+    paths = discover_all(extra_steamapps_dirs=[steamapps])
+    backup = BackupManager(tmp_path / "backups")
+    source = tmp_path / "LinkedMode.pak"
+    source.write_bytes(b"pak")
+
+    plans = build_apply_plans(
+        paths,
+        TARGET_CLIENT,
+        [active_entry_from_pak(source)],
+        target_apply_modes={TARGET_CLIENT: APPLY_MODE_SOURCE},
+    )
+    result = apply_modlist_plans(plans, backup)
+
+    assert plans[0].apply_mode == APPLY_MODE_SOURCE
+    assert paths.client_modlist_path.read_text(encoding="utf-8") == f"{source}\n"
+    assert not (paths.client_mods_dir / "LinkedMode.pak").exists()
+    assert result.copied_paths == []
+    assert target_install_state_for_entry(
+        active_entry_from_pak(source),
+        mods_dir=paths.client_mods_dir,
+        modlist_path=paths.client_modlist_path,
+        apply_mode=APPLY_MODE_SOURCE,
+    ) == "synced"
 
 
 def test_disabled_entries_are_not_written(tmp_path) -> None:

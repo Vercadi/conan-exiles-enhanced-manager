@@ -34,3 +34,11 @@ class WorkshopCache:
             if item.workshop_id == workshop_id:
                 return item
         return None
+
+    def remove(self, workshop_id: str) -> bool:
+        before = len(self._items)
+        self._items = [item for item in self._items if item.workshop_id != workshop_id]
+        changed = len(self._items) != before
+        if changed:
+            self.save(self._items)
+        return changed

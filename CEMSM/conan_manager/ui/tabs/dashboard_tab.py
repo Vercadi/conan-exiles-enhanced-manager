@@ -46,16 +46,6 @@ class DashboardTab(ctk.CTkFrame):
             hover_color="#70402c",
             command=self.app.refresh_discovery,
         ).grid(row=0, column=0, padx=(0, 8))
-        ctk.CTkButton(
-            controls,
-            text="Backup Configs/Saves",
-            width=170,
-            height=self.app.ui_tokens.compact_button_height,
-            font=self.app.ui_font("body"),
-            fg_color="#7d4429",
-            hover_color="#925333",
-            command=self._manual_backup,
-        ).grid(row=0, column=1)
 
         subtitle = ctk.CTkLabel(
             body,
@@ -84,28 +74,6 @@ class DashboardTab(ctk.CTkFrame):
             wraplength=self.app.ui_tokens.panel_wrap * 2,
         )
         self._summary_label.grid(row=1, column=0, columnspan=2, sticky="ew", padx=12, pady=(0, 8))
-        shortcuts = ctk.CTkFrame(self._home_card, fg_color="transparent")
-        shortcuts.grid(row=2, column=0, columnspan=2, sticky="ew", padx=12, pady=(0, 12))
-        for col in range(6):
-            shortcuts.grid_columnconfigure(col, weight=1)
-        shortcut_specs = [
-            ("Workshop", lambda: self.app.select_tab("Workshop")),
-            ("Active Mods", lambda: self.app.select_tab("Active Mods")),
-            ("Profiles", lambda: self.app.select_tab("Profiles")),
-            ("Server", lambda: self.app.select_tab("Server")),
-            ("Hosted", lambda: self.app.select_tab("Hosted")),
-            ("Backup", self._manual_backup),
-        ]
-        for col, (label, command) in enumerate(shortcut_specs):
-            ctk.CTkButton(
-                shortcuts,
-                text=label,
-                height=self.app.ui_tokens.compact_button_height,
-                font=self.app.ui_font("body"),
-                fg_color="#3a3028" if label != "Backup" else "#7d4429",
-                hover_color="#4a3c31" if label != "Backup" else "#925333",
-                command=command,
-            ).grid(row=0, column=col, sticky="ew", padx=(0 if col == 0 else 8, 0))
 
         for card, rows in [
             (
@@ -237,20 +205,30 @@ class DashboardTab(ctk.CTkFrame):
         self._set("client_saves", f"{len(paths.client_save_databases())} database file(s)")
         self._set("client_mods", _folder_state(paths.client_mods_dir))
 
-        self._set("server_status", "Detected" if paths.dedicated_server_root else "Missing", ok=bool(paths.dedicated_server_root))
-        server_status = self.app.dedicated_server_status()
-        self._set("server_runtime", server_status.summary, ok=server_status.running)
-        restart = self.app.server_runtime
-        self._set(
-            "server_restart",
-            f"Recommended: {restart.restart_reason}" if restart.restart_recommended else "No pending restart note",
-            ok=not restart.restart_recommended,
-        )
-        self._set("server_build", _build_label(paths.dedicated_server_manifest))
-        self._set("server_root", _path_label(paths.dedicated_server_root))
-        self._set("server_config", _path_label(paths.dedicated_server_config_dir))
-        self._set("server_saves", f"{len(paths.dedicated_server_save_databases())} database file(s)")
-        self._set("server_mods", _folder_state(paths.dedicated_server_mods_dir))
+        if self.app.dedicated_server_features_enabled():
+            self._set("server_status", "Detected" if paths.dedicated_server_root else "Missing", ok=bool(paths.dedicated_server_root))
+            server_status = self.app.dedicated_server_status()
+            self._set("server_runtime", server_status.summary, ok=server_status.running)
+            restart = self.app.server_runtime
+            self._set(
+                "server_restart",
+                f"Recommended: {restart.restart_reason}" if restart.restart_recommended else "No pending restart note",
+                ok=not restart.restart_recommended,
+            )
+            self._set("server_build", _build_label(paths.dedicated_server_manifest))
+            self._set("server_root", _path_label(paths.dedicated_server_root))
+            self._set("server_config", _path_label(paths.dedicated_server_config_dir))
+            self._set("server_saves", f"{len(paths.dedicated_server_save_databases())} database file(s)")
+            self._set("server_mods", _folder_state(paths.dedicated_server_mods_dir))
+        else:
+            self._set("server_status", "Disabled in Settings", ok=True)
+            self._set("server_runtime", "Not used", ok=True)
+            self._set("server_restart", "No dedicated-server checks", ok=True)
+            self._set("server_build", "Disabled")
+            self._set("server_root", "Not used")
+            self._set("server_config", "Not used")
+            self._set("server_saves", "Not used")
+            self._set("server_mods", "Not used")
 
         self._set("steam_libraries", str(len(paths.steamapps_dirs)))
         workshop_exists = bool(paths.workshop_content_dir and paths.workshop_content_dir.is_dir())
@@ -267,6 +245,7 @@ class DashboardTab(ctk.CTkFrame):
             active_mods=self.app.active_mods,
             workshop_items=self.app.workshop_items,
             enhanced_status=enhanced,
+            dedicated_server_enabled=self.app.dedicated_server_features_enabled(),
         )
         self._attention_label.configure(text="\n".join(f"- {item}" for item in attention) if attention else "No immediate issues found.")
         self._status_label.configure(text=self.app.status_text)
@@ -281,15 +260,6 @@ class DashboardTab(ctk.CTkFrame):
         elif ok is False:
             color = "#c98a2e"
         label.configure(text=value, text_color=color)
-
-    def _manual_backup(self) -> None:
-        records = self.app.backup_configs_and_saves()
-        if records:
-            self.app.notify_info("Backup Complete", f"Backed up {len(records)} config/save file(s).")
-        else:
-            self.app.notify_warning("Backup Complete", "No config or save database files were found to back up.")
-        self.refresh()
-
 
 def _build_label(manifest) -> str:
     if not manifest:

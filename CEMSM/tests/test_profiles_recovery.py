@@ -59,6 +59,13 @@ def test_profile_store_save_load_duplicate_rename_delete(tmp_path) -> None:
     assert loaded.get_mod_profile("Renamed") is None
     assert loaded.get_mod_profile("Vanilla").entries == []
 
+    updated = loaded.update_mod_profile_metadata("Solo", target_coverage=[TARGET_CLIENT, TARGET_HOSTED], notes="changed")
+    reloaded = ProfileStore(tmp_path).get_mod_profile("Solo")
+    assert updated.target_coverage == [TARGET_CLIENT, TARGET_HOSTED]
+    assert reloaded is not None
+    assert reloaded.notes == "changed"
+    assert reloaded.entries
+
 
 def test_vanilla_restore_creates_backup_and_does_not_delete_paks(tmp_path) -> None:
     steamapps = create_fake_conan_library(tmp_path)

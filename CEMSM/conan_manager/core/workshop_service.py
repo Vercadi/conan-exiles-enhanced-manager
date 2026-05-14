@@ -11,6 +11,7 @@ from ..models.workshop import (
     WORKSHOP_STATUS_NO_PAK,
     WorkshopItem,
 )
+from .local_mod_library import normalize_mod_display_name
 from .workshop_cache import WorkshopCache
 
 log = logging.getLogger(__name__)
@@ -22,6 +23,13 @@ class WorkshopService:
 
     def list_items(self) -> list[WorkshopItem]:
         return self.cache.list_items()
+
+    def remove_ids(self, workshop_ids: list[str]) -> int:
+        removed = 0
+        for workshop_id in dict.fromkeys(str(value).strip() for value in workshop_ids):
+            if workshop_id and self.cache.remove(workshop_id):
+                removed += 1
+        return removed
 
     def add_ids(self, workshop_ids: list[str], workshop_root: Path | None) -> list[WorkshopItem]:
         items = self.cache.list_items()
@@ -118,6 +126,16 @@ class WorkshopService:
             status=WORKSHOP_STATUS_MISSING,
             compatibility_note=(existing.compatibility_note if existing else "Enhanced compatibility unknown"),
         )
+
+
+def workshop_display_name(item: WorkshopItem) -> str:
+    """Return a readable display name from cache metadata or local pak names."""
+    title = str(item.title or "").strip()
+    if title and title.casefold() != f"workshop {item.workshop_id}".casefold():
+        return normalize_mod_display_name(title)
+    if item.primary_pak:
+        return normalize_mod_display_name(item.primary_pak.stem)
+    return f"Workshop {item.workshop_id}"
 
 
 def _safe_size(path: Path) -> int:

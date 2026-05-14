@@ -9,8 +9,14 @@ def _path_to_str(path: Optional[Path]) -> Optional[str]:
     return str(path) if path else None
 
 
-def _path_from_str(value: Optional[str]) -> Optional[Path]:
+def path_from_setting(value: Optional[str]) -> Optional[Path]:
+    if isinstance(value, str) and value.strip().casefold() in {"", "null", "none"}:
+        return None
     return Path(value) if value else None
+
+
+def _path_from_str(value: Optional[str]) -> Optional[Path]:
+    return path_from_setting(value)
 
 
 @dataclass

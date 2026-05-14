@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from conan_manager.core.discovery import discover_all
 from conan_manager.core.server_config import read_server_config
-from conan_manager.core.server_launcher import build_launch_plan, split_launch_args
+from conan_manager.core.server_launcher import build_client_launch_plan, build_launch_plan, split_launch_args
 from conan_manager.core.server_logs import filter_mod_related_lines, read_server_log_snapshot
 from conan_manager.core.server_process import ServerProcessService
 from conan_manager.models.server import ProcessInfo, ServerRuntimeState
@@ -114,6 +114,18 @@ def test_launch_command_builder_uses_root_executable_and_args(tmp_path) -> None:
     assert plan.executable == paths.dedicated_server_root / "ConanSandboxServer.exe"
     assert plan.args == ["-Messaging", "-log"]
     assert plan.command == [str(plan.executable), "-Messaging", "-log"]
+
+
+def test_client_launch_command_builder_uses_root_executable(tmp_path) -> None:
+    steamapps = create_fake_conan_library(tmp_path)
+    paths = discover_all(extra_steamapps_dirs=[steamapps])
+
+    plan = build_client_launch_plan(paths)
+
+    assert plan is not None
+    assert plan.executable == paths.client_root / "ConanSandbox.exe"
+    assert plan.args == []
+    assert plan.command == [str(plan.executable)]
 
 
 def test_split_launch_args_handles_empty_string() -> None:

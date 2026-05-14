@@ -7,11 +7,16 @@ from ..models.app_paths import ConanAppPaths
 from .steamcmd_workshop import validate_steamcmd_path
 
 
-def first_run_guidance(paths: ConanAppPaths, *, steamcmd_path: str | Path | None = None) -> list[str]:
+def first_run_guidance(
+    paths: ConanAppPaths,
+    *,
+    steamcmd_path: str | Path | None = None,
+    dedicated_server_enabled: bool = True,
+) -> list[str]:
     messages: list[str] = []
     if not paths.client_root:
         messages.append("Conan Exiles Enhanced was not detected. Install it through Steam or set the game path after discovery.")
-    if not paths.dedicated_server_root:
+    if dedicated_server_enabled and not paths.dedicated_server_root:
         messages.append("Conan Exiles Dedicated Server was not detected. Install Steam app 443030 if you want local server management.")
     status = validate_steamcmd_path(steamcmd_path)
     if not status.ok:
@@ -29,6 +34,12 @@ def steamcmd_setup_guidance(reason: str = "") -> str:
 
 
 def workshop_download_failure_summary(output_text: str, *, max_length: int = 240) -> str:
+    lowered = str(output_text or "").casefold()
+    if "steambootstrapper" in lowered or "public/" in lowered:
+        return (
+            "SteamCMD could not load its public support files. Make sure steamcmd.exe is inside a complete "
+            "extracted SteamCMD folder, then run steamcmd.exe once manually before retrying."
+        )[:max_length]
     lines = [line.strip() for line in str(output_text or "").splitlines() if line.strip()]
     interesting = [
         line

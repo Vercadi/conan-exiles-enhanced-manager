@@ -12,10 +12,24 @@ from .server_process import ServerProcessService
 DEFAULT_SERVER_ARGS = "-Messaging"
 
 
+def client_executable(paths: ConanAppPaths) -> Path | None:
+    if not paths.client_root:
+        return None
+    return paths.client_root / "ConanSandbox.exe"
+
+
 def dedicated_server_executable(paths: ConanAppPaths) -> Path | None:
     if not paths.dedicated_server_root:
         return None
     return paths.dedicated_server_root / "ConanSandboxServer.exe"
+
+
+def build_client_launch_plan(paths: ConanAppPaths, launch_args: str = "") -> ServerLaunchPlan | None:
+    executable = client_executable(paths)
+    if executable is None:
+        return None
+    args = split_launch_args(launch_args)
+    return ServerLaunchPlan(executable=executable, args=args, cwd=executable.parent)
 
 
 def build_launch_plan(paths: ConanAppPaths, launch_args: str = DEFAULT_SERVER_ARGS) -> ServerLaunchPlan | None:
@@ -30,6 +44,22 @@ def split_launch_args(launch_args: str) -> list[str]:
     if not str(launch_args or "").strip():
         return []
     return shlex.split(str(launch_args), posix=False)
+
+
+def launch_client_game(paths: ConanAppPaths, *, launch_args: str = "") -> ServerLaunchResult:
+    plan = build_client_launch_plan(paths, launch_args)
+    if plan is None:
+        return ServerLaunchResult(started=False, message="Conan Exiles client path is not configured.")
+    if not plan.executable.is_file():
+        return ServerLaunchResult(started=False, message=f"Conan Exiles executable was not found: {plan.executable}")
+
+    process = subprocess.Popen(plan.command, cwd=str(plan.cwd))
+    return ServerLaunchResult(
+        started=True,
+        message="Conan Exiles launch requested.",
+        command=plan.command,
+        pid=process.pid,
+    )
 
 
 def launch_dedicated_server(

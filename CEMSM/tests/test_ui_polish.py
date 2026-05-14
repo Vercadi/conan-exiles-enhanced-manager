@@ -49,6 +49,9 @@ def test_needs_attention_summary_uses_paths_and_enhanced_status() -> None:
     assert "Conan Exiles Enhanced client was not detected." in items
     assert "Conan Exiles Dedicated Server was not detected." in items
 
+    client_only = build_needs_attention(ConanAppPaths(), dedicated_server_enabled=False)
+    assert "Conan Exiles Dedicated Server was not detected." not in client_only
+
 
 def test_enhanced_detection_uses_build_ids(tmp_path) -> None:
     steamapps = create_fake_conan_library(tmp_path)
@@ -96,7 +99,7 @@ def test_large_active_mod_row_formatting_is_stable() -> None:
     entry = ActiveModEntry("C:/" + "very_long_folder/" * 30 + "Example.pak", display_name="Example")
     row = format_active_mod_row(512, entry, missing=True, max_value_length=90)
 
-    assert row.startswith("512. [!]")
+    assert row.startswith("512. [Missing]")
     assert "Example" in row
     assert len(row) < 150
 
@@ -106,4 +109,22 @@ def test_disabled_active_mod_row_is_marked_without_missing_flag() -> None:
 
     row = format_active_mod_row(1, entry, missing=True)
 
-    assert "[off]" in row
+    assert "[Inactive]" in row
+
+
+def test_active_mod_row_normalizes_camelcase_names() -> None:
+    entry = ActiveModEntry("AdvancedGliders.pak", display_name="AdvancedGliders", workshop_id="3720667122")
+
+    row = format_active_mod_row(1, entry)
+
+    assert "[Active]" in row
+    assert "Advanced Gliders" in row
+
+
+def test_active_mod_row_can_hide_source_path_for_dense_ui() -> None:
+    entry = ActiveModEntry("C:/SteamCMD/steamapps/workshop/content/440900/3720667122/AdvancedGliders.pak")
+
+    row = format_active_mod_row(1, entry, show_value=False)
+
+    assert "Advanced Gliders" in row
+    assert "::" not in row

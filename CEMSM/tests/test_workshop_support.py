@@ -85,6 +85,46 @@ def test_workshop_cache_roundtrip_preserves_metadata(tmp_path) -> None:
     assert loaded[0].pak_paths == [tmp_path / "123" / "Test.pak"]
 
 
+def test_workshop_cache_remove_forgets_record_without_touching_folder(tmp_path) -> None:
+    folder = tmp_path / "workshop" / "123"
+    folder.mkdir(parents=True)
+    pak = folder / "Test.pak"
+    pak.write_bytes(b"pak")
+    cache = WorkshopCache(tmp_path / "data")
+    item = WorkshopItem(workshop_id="123", folder_path=folder, pak_paths=[pak], status=WORKSHOP_STATUS_DOWNLOADED)
+    cache.save([item])
+    service = WorkshopService(cache)
+
+    removed = service.remove_ids(["123"])
+
+    assert removed == 1
+    assert service.list_items() == []
+    assert pak.is_file()
+
+
+def test_workshop_cache_remove_can_forget_all_missing_records(tmp_path) -> None:
+    cache = WorkshopCache(tmp_path / "data")
+    downloaded_folder = tmp_path / "workshop" / "111"
+    downloaded_folder.mkdir(parents=True)
+    pak = downloaded_folder / "Downloaded.pak"
+    pak.write_bytes(b"pak")
+    cache.save(
+        [
+            WorkshopItem(workshop_id="111", folder_path=downloaded_folder, pak_paths=[pak], status=WORKSHOP_STATUS_DOWNLOADED),
+            WorkshopItem(workshop_id="222", status=WORKSHOP_STATUS_MISSING),
+            WorkshopItem(workshop_id="333", status=WORKSHOP_STATUS_MISSING),
+        ]
+    )
+    service = WorkshopService(cache)
+    missing_ids = [item.workshop_id for item in service.list_items() if item.status == WORKSHOP_STATUS_MISSING]
+
+    removed = service.remove_ids(missing_ids)
+
+    assert removed == 2
+    assert [item.workshop_id for item in service.list_items()] == ["111"]
+    assert pak.is_file()
+
+
 def test_downloaded_workshop_item_can_become_active_mod_entry(tmp_path) -> None:
     pak = tmp_path / "SomeWorkshopMod.pak"
     pak.write_bytes(b"pak")
@@ -101,3 +141,17 @@ def test_downloaded_workshop_item_can_become_active_mod_entry(tmp_path) -> None:
     assert entry.display_name == "Some Workshop Mod"
     assert entry.source_type == "workshop"
     assert entry.workshop_id == "999"
+
+
+def test_downloaded_workshop_entry_uses_pak_name_when_title_is_unknown(tmp_path) -> None:
+    pak = tmp_path / "AdvancedGliders.pak"
+    pak.write_bytes(b"pak")
+    item = WorkshopItem(
+        workshop_id="3720667122",
+        pak_paths=[pak],
+        status=WORKSHOP_STATUS_DOWNLOADED,
+    )
+
+    entry = active_entry_from_workshop_item(item)
+
+    assert entry.display_name == "Advanced Gliders"

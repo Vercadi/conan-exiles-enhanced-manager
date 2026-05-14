@@ -15,6 +15,9 @@ TARGET_LABELS = {
     TARGET_BOTH: "Both",
 }
 
+APPLY_MODE_COPY = "copy"
+APPLY_MODE_SOURCE = "source"
+
 
 @dataclass
 class ActiveModEntry:
@@ -36,7 +39,7 @@ class ActiveModEntry:
 
     @property
     def requires_target_copy(self) -> bool:
-        return self.source_type in {"local_pak", "managed_local", "archive_component", "external_link"}
+        return self.source_type in {"local_pak", "managed_local", "archive_component", "external_link", "workshop"}
 
     def to_dict(self) -> dict:
         return {
@@ -95,7 +98,9 @@ class ModlistTargetPlan:
     proposed_entries: list[ActiveModEntry] = field(default_factory=list)
     target_modlist_values: list[str] = field(default_factory=list)
     file_copies: list["TargetFileCopy"] = field(default_factory=list)
+    quarantine_paths: list[Path] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    apply_mode: str = APPLY_MODE_COPY
 
     @property
     def creates_mods_dir(self) -> bool:
@@ -127,6 +132,7 @@ class ModlistApplyResult:
     written_paths: list[Path] = field(default_factory=list)
     backup_ids: list[str] = field(default_factory=list)
     copied_paths: list[Path] = field(default_factory=list)
+    quarantined_paths: list[Path] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
 
 

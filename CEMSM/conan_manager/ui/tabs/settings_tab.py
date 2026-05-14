@@ -22,6 +22,11 @@ CONFIRMATION_LABELS = {
     "No Confirmation Popups": "none",
 }
 
+APPLY_MODE_LABELS = {
+    "Copy/sync files to target Mods folder": "copy",
+    "Write source paths directly to modlist.txt": "source",
+}
+
 
 class SettingsTab(ctk.CTkFrame):
     def __init__(self, master, *, app):
@@ -33,17 +38,32 @@ class SettingsTab(ctk.CTkFrame):
         )
         self._result_popups_var = tk.BooleanVar(value=app.preferences.show_result_popups)
         self._auto_updates_var = tk.BooleanVar(value=app.preferences.auto_check_updates)
+        self._dedicated_enabled_var = tk.BooleanVar(value=app.preferences.dedicated_server_enabled)
+        self._client_root_var = ctk.StringVar(value=str(app.paths.client_root or ""))
+        self._dedicated_root_var = ctk.StringVar(value=str(app.paths.dedicated_server_root or ""))
         self._steamcmd_path_var = ctk.StringVar(value=app.preferences.steamcmd_path)
         self._steamcmd_username_var = ctk.StringVar(value=app.preferences.steamcmd_username)
+        self._workshop_content_dir_var = ctk.StringVar(value=str(app.paths.workshop_content_dir or ""))
+        self._client_apply_mode_var = ctk.StringVar(
+            value=_label_for_value(APPLY_MODE_LABELS, app.preferences.client_mod_apply_mode, "Copy/sync files to target Mods folder")
+        )
+        self._server_apply_mode_var = ctk.StringVar(
+            value=_label_for_value(
+                APPLY_MODE_LABELS,
+                app.preferences.dedicated_server_mod_apply_mode,
+                "Copy/sync files to target Mods folder",
+            )
+        )
         self._build()
         self.refresh()
 
     def _build(self) -> None:
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(0, weight=1)
+        self.grid_rowconfigure(1, weight=0)
 
         body = ctk.CTkScrollableFrame(self, fg_color="#101010")
-        body.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
+        body.grid(row=0, column=0, sticky="nsew", padx=10, pady=(10, 4))
         body.grid_columnconfigure(0, weight=1)
 
         ctk.CTkLabel(
@@ -91,6 +111,13 @@ class SettingsTab(ctk.CTkFrame):
             self._auto_updates_var,
             "Checks GitHub Releases on startup. Manual checks are always available in Help.",
         )
+        self._switch_row(
+            behavior,
+            5,
+            "Use Dedicated Server features",
+            self._dedicated_enabled_var,
+            "Turn this off for client-only setups to hide dedicated-server warnings and default profile coverage.",
+        )
 
         ctk.CTkLabel(
             behavior,
@@ -102,9 +129,65 @@ class SettingsTab(ctk.CTkFrame):
             text_color="#b9aa92",
             wraplength=self.app.ui_tokens.panel_wrap,
             justify="left",
-        ).grid(row=5, column=0, columnspan=2, sticky="ew", padx=12, pady=(8, 12))
+        ).grid(row=6, column=0, columnspan=2, sticky="ew", padx=12, pady=(8, 12))
 
-        steamcmd = self._card(body, 3, "SteamCMD")
+        paths = self._card(body, 3, "Local Paths")
+        paths.grid_columnconfigure(1, weight=1)
+        self._entry_row(paths, 1, "Conan client root", self._client_root_var, browse_command=self._browse_client_root)
+        self._entry_row(
+            paths,
+            2,
+            "Dedicated server root",
+            self._dedicated_root_var,
+            browse_command=self._browse_dedicated_root,
+        )
+        self._entry_row(
+            paths,
+            3,
+            "Workshop content 440900",
+            self._workshop_content_dir_var,
+            browse_command=self._browse_workshop_content_dir,
+        )
+        self._path_status_label = ctk.CTkLabel(
+            paths,
+            text="",
+            font=self.app.ui_font("small"),
+            text_color="#b9aa92",
+            wraplength=self.app.ui_tokens.panel_wrap,
+            justify="left",
+            anchor="w",
+        )
+        self._path_status_label.grid(row=4, column=0, columnspan=3, sticky="ew", padx=12, pady=(8, 12))
+
+        apply_modes = self._card(body, 4, "Apply Mode")
+        apply_modes.grid_columnconfigure(1, weight=1)
+        self._option_row(
+            apply_modes,
+            1,
+            "Client mods",
+            self._client_apply_mode_var,
+            list(APPLY_MODE_LABELS.keys()),
+        )
+        self._option_row(
+            apply_modes,
+            2,
+            "Dedicated mods",
+            self._server_apply_mode_var,
+            list(APPLY_MODE_LABELS.keys()),
+        )
+        ctk.CTkLabel(
+            apply_modes,
+            text=(
+                "Copy/sync avoids broken paths when moving files around. Source-path mode matches the legacy launcher style "
+                "and avoids duplicate local copies for client/dedicated modlists."
+            ),
+            font=self.app.ui_font("small"),
+            text_color="#b9aa92",
+            wraplength=self.app.ui_tokens.panel_wrap,
+            justify="left",
+        ).grid(row=3, column=0, columnspan=2, sticky="ew", padx=12, pady=(8, 12))
+
+        steamcmd = self._card(body, 5, "SteamCMD")
         steamcmd.grid_columnconfigure(1, weight=1)
         self._entry_row(
             steamcmd,
@@ -126,7 +209,21 @@ class SettingsTab(ctk.CTkFrame):
             justify="left",
         ).grid(row=3, column=0, columnspan=3, sticky="ew", padx=12, pady=(8, 12))
 
-        storage = self._card(body, 4, "Storage")
+        workshop = self._card(body, 6, "Steam Workshop")
+        workshop.grid_columnconfigure(1, weight=1)
+        ctk.CTkLabel(
+            workshop,
+            text=(
+                "Use the Conan Workshop content folder, usually steamapps\\workshop\\content\\440900. "
+                "Set it above under Local Paths. Manual paths are preserved across discovery refreshes."
+            ),
+            font=self.app.ui_font("small"),
+            text_color="#b9aa92",
+            wraplength=self.app.ui_tokens.panel_wrap,
+            justify="left",
+        ).grid(row=1, column=0, columnspan=3, sticky="ew", padx=12, pady=(8, 12))
+
+        storage = self._card(body, 7, "Storage")
         self._value_row(storage, 1, "Data", str(self.app.paths.data_dir or "Not configured"))
         self._value_row(storage, 2, "Backups", str(self.app.paths.backup_dir or "Not configured"))
         storage_actions = ctk.CTkFrame(storage, fg_color="transparent")
@@ -139,8 +236,8 @@ class SettingsTab(ctk.CTkFrame):
             column=1,
         )
 
-        actions = ctk.CTkFrame(body, fg_color="transparent")
-        actions.grid(row=5, column=0, sticky="ew", padx=8, pady=(4, 0))
+        actions = ctk.CTkFrame(self, fg_color="#101010")
+        actions.grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 10))
         actions.grid_columnconfigure(0, weight=1)
         self._result_label = ctk.CTkLabel(
             actions,
@@ -284,10 +381,34 @@ class SettingsTab(ctk.CTkFrame):
         )
         self._result_popups_var.set(preferences.show_result_popups)
         self._auto_updates_var.set(preferences.auto_check_updates)
+        self._dedicated_enabled_var.set(preferences.dedicated_server_enabled)
+        self._client_root_var.set(str(self.app.paths.client_root or ""))
+        self._dedicated_root_var.set(str(self.app.paths.dedicated_server_root or ""))
         self._steamcmd_path_var.set(preferences.steamcmd_path)
         self._steamcmd_username_var.set(preferences.steamcmd_username)
+        self._workshop_content_dir_var.set(str(self.app.paths.workshop_content_dir or ""))
+        self._client_apply_mode_var.set(
+            _label_for_value(APPLY_MODE_LABELS, preferences.client_mod_apply_mode, "Copy/sync files to target Mods folder")
+        )
+        self._server_apply_mode_var.set(
+            _label_for_value(APPLY_MODE_LABELS, preferences.dedicated_server_mod_apply_mode, "Copy/sync files to target Mods folder")
+        )
+        if hasattr(self, "_path_status_label"):
+            summary = self.app.path_validation_summary()
+            self._path_status_label.configure(text="\n".join(summary.values()))
         if hasattr(self, "_result_label"):
             self._result_label.configure(text="Current settings are loaded.")
+
+    def _browse_client_root(self) -> None:
+        path = filedialog.askdirectory(title="Select Conan Exiles folder")
+        if path:
+            self._client_root_var.set(path)
+
+    def _browse_dedicated_root(self) -> None:
+        path = filedialog.askdirectory(title="Select Conan Exiles Dedicated Server folder")
+        if path:
+            self._dedicated_root_var.set(path)
+            self._dedicated_enabled_var.set(True)
 
     def _browse_steamcmd(self) -> None:
         path = filedialog.askopenfilename(
@@ -296,6 +417,11 @@ class SettingsTab(ctk.CTkFrame):
         )
         if path:
             self._steamcmd_path_var.set(path)
+
+    def _browse_workshop_content_dir(self) -> None:
+        path = filedialog.askdirectory(title="Select Conan Workshop content folder")
+        if path:
+            self._workshop_content_dir_var.set(path)
 
     def _save(self) -> None:
         preferences = AppPreferences(
@@ -306,7 +432,16 @@ class SettingsTab(ctk.CTkFrame):
             auto_check_updates=bool(self._auto_updates_var.get()),
             steamcmd_path=self._steamcmd_path_var.get(),
             steamcmd_username=self._steamcmd_username_var.get(),
+            first_run_setup_completed=self.app.preferences.first_run_setup_completed,
+            dedicated_server_enabled=bool(self._dedicated_enabled_var.get()),
+            client_mod_apply_mode=APPLY_MODE_LABELS.get(self._client_apply_mode_var.get(), "copy"),
+            dedicated_server_mod_apply_mode=APPLY_MODE_LABELS.get(self._server_apply_mode_var.get(), "copy"),
         ).normalized()
+        self.app.update_local_paths(
+            client_root=self._client_root_var.get(),
+            dedicated_server_root=self._dedicated_root_var.get(),
+            workshop_content_dir=self._workshop_content_dir_var.get(),
+        )
         self.app.update_preferences(preferences)
         self._result_label.configure(text="Saved. Restart to fully refresh any already-open tab sizing.")
         self.app.notify_info("Settings Saved", "Settings saved.")
