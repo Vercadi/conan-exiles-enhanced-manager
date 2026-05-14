@@ -2,6 +2,7 @@
 
 [![Latest tag](https://img.shields.io/github/v/tag/Vercadi/conan-exiles-enhanced-manager?label=latest%20tag)](https://github.com/Vercadi/conan-exiles-enhanced-manager/tags)
 [![License](https://img.shields.io/github/license/Vercadi/conan-exiles-enhanced-manager)](LICENSE)
+[![Nexus Mods](https://img.shields.io/badge/Nexus%20Mods-download-orange)](https://www.nexusmods.com/conanexiles/mods/155)
 [![Ko-fi](https://img.shields.io/badge/Ko--fi-support-ff5f5f)](https://ko-fi.com/vercadi)
 [![Patreon](https://img.shields.io/badge/Patreon-support-f96854)](https://www.patreon.com/cw/Vercadi)
 
@@ -9,17 +10,16 @@ A Windows desktop manager for **Conan Exiles Enhanced** mods, Steam Workshop mod
 
 ## Media
 
-Screenshots will be added with the first public packaged release. No screenshot or banner asset is currently tracked in this repository.
+Screenshots and file-page images are hosted on the [Nexus Mods page](https://www.nexusmods.com/conanexiles/mods/155). No screenshot or banner asset is currently tracked in this repository.
 
 ## Download
 
 - Source repository: [GitHub](https://github.com/Vercadi/conan-exiles-enhanced-manager)
+- Packaged app: [Nexus Mods](https://www.nexusmods.com/conanexiles/mods/155)
 - Tags: [GitHub Tags](https://github.com/Vercadi/conan-exiles-enhanced-manager/tags)
 - Releases: [GitHub Releases](https://github.com/Vercadi/conan-exiles-enhanced-manager/releases)
 
-No public packaged GitHub release is currently published. Build from source for now, or use a future GitHub Release once it is public.
-
-I did not find a public Nexus Mods page for this project, so no Nexus badge or download link is included here.
+No public packaged GitHub release is currently published. Use Nexus Mods for the packaged app, or build from source if you want to inspect or run the repository version.
 
 ## Installation
 
@@ -51,7 +51,7 @@ SteamCMD downloads Workshop files into its own `steamapps/workshop/content/44090
 
 ## Update
 
-Public packaged updates will be distributed through GitHub Releases once a release is published. Source users can pull the latest repository changes and reinstall dependencies if requirements change.
+Download packaged updates from [Nexus Mods](https://www.nexusmods.com/conanexiles/mods/155). Source users can pull the latest repository changes and reinstall dependencies if requirements change. GitHub Releases can become a package download path once a public release is published there.
 
 ## Usage
 
