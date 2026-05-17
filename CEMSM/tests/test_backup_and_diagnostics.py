@@ -53,6 +53,7 @@ def test_support_diagnostics_includes_release_context_and_steamcmd_status(tmp_pa
             WorkshopItem(workshop_id="222", status=WORKSHOP_STATUS_MISSING),
         ],
         steamcmd_path=steamcmd,
+        mod_note_count=3,
     )
 
     assert "Feature flags:" in report
@@ -60,4 +61,5 @@ def test_support_diagnostics_includes_release_context_and_steamcmd_status(tmp_pa
     assert "- Status: configured" in report
     assert "- Active entries: 2" in report
     assert "- Workshop downloaded: 1" in report
+    assert "- Mod notes: 3" in report
     assert "steam-user" not in report

@@ -13,6 +13,7 @@ from ..models.workshop import (
 )
 from .local_mod_library import normalize_mod_display_name
 from .workshop_cache import WorkshopCache
+from .workshop_metadata import CONAN_WORKSHOP_APP_ID, WorkshopMetadata
 
 log = logging.getLogger(__name__)
 
@@ -45,6 +46,27 @@ class WorkshopService:
         if changed:
             self.cache.save(items)
         return items
+
+    def merge_metadata(self, metadata_items: list[WorkshopMetadata]) -> list[WorkshopItem]:
+        items = self.cache.list_items()
+        by_id = {item.workshop_id: item for item in items}
+        ordered_ids = [item.workshop_id for item in items]
+        changed = False
+        for metadata in metadata_items:
+            if not metadata.workshop_id:
+                continue
+            item = by_id.get(metadata.workshop_id)
+            if item is None:
+                item = WorkshopItem(workshop_id=metadata.workshop_id)
+                by_id[metadata.workshop_id] = item
+                ordered_ids.append(metadata.workshop_id)
+            _apply_metadata(item, metadata)
+            changed = True
+        if changed:
+            items = [by_id[workshop_id] for workshop_id in ordered_ids if workshop_id in by_id]
+            self.cache.save(items)
+            return items
+        return self.cache.list_items()
 
     def scan(self, workshop_root: Path | None) -> list[WorkshopItem]:
         return self.scan_roots([workshop_root])
@@ -130,12 +152,28 @@ class WorkshopService:
 
 def workshop_display_name(item: WorkshopItem) -> str:
     """Return a readable display name from cache metadata or local pak names."""
-    title = str(item.title or "").strip()
+    title = str(item.title or item.display_name_override or "").strip()
     if title and title.casefold() != f"workshop {item.workshop_id}".casefold():
         return normalize_mod_display_name(title)
     if item.primary_pak:
         return normalize_mod_display_name(item.primary_pak.stem)
     return f"Workshop {item.workshop_id}"
+
+
+def _apply_metadata(item: WorkshopItem, metadata: WorkshopMetadata) -> None:
+    if metadata.title:
+        item.title = metadata.title
+    item.remote_file_size = metadata.file_size
+    item.remote_time_updated = metadata.time_updated
+    item.consumer_app_id = metadata.consumer_app_id
+    item.creator_app_id = metadata.creator_app_id
+    item.preview_url = metadata.preview_url
+    item.tags = list(metadata.tags)
+    item.metadata_result = metadata.result
+    item.metadata_fetched_at = metadata.fetched_at
+    item.metadata_warning = metadata.warning
+    if metadata.consumer_app_id and metadata.consumer_app_id != CONAN_WORKSHOP_APP_ID:
+        item.compatibility_note = metadata.warning or item.compatibility_note
 
 
 def _safe_size(path: Path) -> int:

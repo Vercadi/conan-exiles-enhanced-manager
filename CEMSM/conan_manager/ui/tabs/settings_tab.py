@@ -209,21 +209,7 @@ class SettingsTab(ctk.CTkFrame):
             justify="left",
         ).grid(row=3, column=0, columnspan=3, sticky="ew", padx=12, pady=(8, 12))
 
-        workshop = self._card(body, 6, "Steam Workshop")
-        workshop.grid_columnconfigure(1, weight=1)
-        ctk.CTkLabel(
-            workshop,
-            text=(
-                "Use the Conan Workshop content folder, usually steamapps\\workshop\\content\\440900. "
-                "Set it above under Local Paths. Manual paths are preserved across discovery refreshes."
-            ),
-            font=self.app.ui_font("small"),
-            text_color="#b9aa92",
-            wraplength=self.app.ui_tokens.panel_wrap,
-            justify="left",
-        ).grid(row=1, column=0, columnspan=3, sticky="ew", padx=12, pady=(8, 12))
-
-        storage = self._card(body, 7, "Storage")
+        storage = self._card(body, 6, "Storage")
         self._value_row(storage, 1, "Data", str(self.app.paths.data_dir or "Not configured"))
         self._value_row(storage, 2, "Backups", str(self.app.paths.backup_dir or "Not configured"))
         storage_actions = ctk.CTkFrame(storage, fg_color="transparent")

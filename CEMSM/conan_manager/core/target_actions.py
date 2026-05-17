@@ -80,6 +80,17 @@ def move_items_to_index(items: Sequence[T], indices: Iterable[int], target_index
     return reordered, list(range(adjusted_target, adjusted_target + len(picked)))
 
 
+def validate_one_based_position(value: int | str, *, minimum: int, maximum: int) -> int:
+    """Return a zero-based index for a 1-based UI position."""
+    try:
+        position = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Position must be a number.") from exc
+    if position < minimum or position > maximum:
+        raise ValueError(f"Position must be between {minimum} and {maximum}.")
+    return position - 1
+
+
 def classify_dropped_mod_files(paths: Iterable[Path]) -> DroppedModFiles:
     pak_files: list[Path] = []
     archive_files: list[Path] = []

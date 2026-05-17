@@ -1,12 +1,14 @@
 """Active Mods tab with local library and load-order management."""
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 import tkinter as tk
-from tkinter import filedialog
+from tkinter import filedialog, simpledialog
 
 import customtkinter as ctk
 
+from ...core.size_formatting import format_bytes
 from ...core.list_formatting import format_active_mod_row
 from ...core.local_mod_library import ArchiveInspection, normalize_mod_display_name, target_sync_labels
 from ...core.modlist_service import missing_entries
@@ -38,7 +40,7 @@ TARGET_CHOICES = {
     "Both": TARGET_BOTH,
 }
 
-FILTER_CHOICES = ["All", "Local", "Workshop", "Archive", "Missing", "Active"]
+FILTER_CHOICES = ["All", "Local", "Workshop", "Archive", "Missing", "Active", "Inactive / Not Active"]
 ACTIVE_FILTER_CHOICES = [
     "All",
     "Client Target",
@@ -639,6 +641,8 @@ class ActiveModsTab(ctk.CTkFrame):
             return is_missing
         if filter_value == "Active":
             return is_active
+        if filter_value == "Inactive / Not Active":
+            return not is_active
         return False
 
     def _workshop_matches_filter(self, item: WorkshopItem, filter_value: str, active_workshop_ids: set[str]) -> bool:
@@ -651,6 +655,8 @@ class ActiveModsTab(ctk.CTkFrame):
             return is_missing
         if filter_value == "Active":
             return item.workshop_id in active_workshop_ids
+        if filter_value == "Inactive / Not Active":
+            return item.workshop_id not in active_workshop_ids
         return False
 
     def _active_entry_matches_filter(self, entry: ActiveModEntry, filter_value: str) -> bool:
@@ -819,12 +825,17 @@ class ActiveModsTab(ctk.CTkFrame):
                 self._component_display_name(component),
                 f"Status: {self._component_status_badge(component, self._component_is_active(component))}",
                 f"Source: {_source_label(component.source_type)}",
+                f"Pak size: {format_bytes(component.primary_file.size)}",
                 f"Pak: {component.primary_file.path}",
             ]
             if component.primary_file.original_path:
                 lines.append(f"Original: {component.primary_file.original_path}")
             if component.companion_files:
-                lines.append("Companions: " + ", ".join(file.path.name for file in component.companion_files))
+                companion_size = sum(file.size for file in component.companion_files)
+                lines.append(
+                    f"Companions: {len(component.companion_files)} file(s), {format_bytes(companion_size)} total - "
+                    + ", ".join(file.path.name for file in component.companion_files)
+                )
             return "\n".join(lines)
         if kind == "source":
             source = self._source_by_id.get(value)
@@ -833,6 +844,7 @@ class ActiveModsTab(ctk.CTkFrame):
             return "\n".join(
                 [
                     f"{normalize_mod_display_name(source.display_name)}",
+                    f"Archive size: {format_bytes(source.size)}",
                     f"Source archive: {source.original_path or 'unknown'}",
                     f"Managed archive: {source.managed_path or 'unknown'}",
                     f"Components: {len(source.component_ids)}",
@@ -843,12 +855,18 @@ class ActiveModsTab(ctk.CTkFrame):
             if item is None:
                 return "Workshop item missing."
             pak_text = ", ".join(str(path) for path in item.pak_paths) if item.pak_paths else "none"
+            remote_updated = f"Steam updated: {_timestamp_label(item.remote_time_updated)}"
             return "\n".join(
                 [
                     f"{workshop_display_name(item)} (Workshop {item.workshop_id})",
                     f"Status: {_workshop_status_label(item)}",
+                    f"Local size: {format_bytes(item.local_size)}",
+                    f"Steam remote size: {format_bytes(item.remote_file_size)}",
+                    remote_updated,
                     f"Folder: {item.folder_path or 'unknown'}",
                     f"Pak files: {pak_text}",
+                    f"Tags: {', '.join(item.tags) if item.tags else 'none'}",
+                    item.metadata_warning,
                     item.compatibility_note,
                 ]
             )
@@ -861,8 +879,12 @@ class ActiveModsTab(ctk.CTkFrame):
             f"Status: {'Enabled' if entry.enabled else 'Disabled'}",
             f"Source: {entry.source_type.replace('_', ' ')}",
             f"Targets: {' | '.join(labels) if labels else 'not configured'}",
+            f"Source pak size: {format_bytes(_safe_size(Path(entry.value)))}",
             f"modlist value/source pak: {entry.value}",
         ]
+        note_text = self.app.note_text_for_active_entry(entry)
+        if note_text.strip():
+            lines.append("Notes: saved")
         if entry.workshop_id:
             lines.append(f"Workshop ID: {entry.workshop_id}")
         if entry.component_id:
@@ -1128,6 +1150,23 @@ class ActiveModsTab(ctk.CTkFrame):
             rows = [self._selected_library_row]
         self.app.add_library_rows_to_active(rows)
 
+    def _add_selected_library_to_position(self) -> None:
+        rows = self._selected_library_rows()
+        if not rows and self._selected_library_row is not None:
+            rows = [self._selected_library_row]
+        if not rows:
+            self.app.notify_warning("No Library Item Selected", "Select one or more Library rows to add.", popup=False)
+            return
+        position = self._ask_position(
+            "Add to Position",
+            f"Position in Active Load Order (1-{len(self.app.active_mods) + 1}):",
+            minimum=1,
+            maximum=len(self.app.active_mods) + 1,
+        )
+        if position is None:
+            return
+        self.app.add_library_rows_to_active(rows, insert_index=position - 1)
+
     def _sync_selected_library_to_target(self) -> None:
         rows = self._selected_library_rows()
         if not rows and self._selected_library_row is not None:
@@ -1162,6 +1201,7 @@ class ActiveModsTab(ctk.CTkFrame):
         kind, value = row
         if kind == "component":
             menu.add_command(label="Add to Active Load Order", command=self._add_selected_library_to_active)
+            menu.add_command(label="Add to Position...", command=self._add_selected_library_to_position)
             self._add_sync_menu_items(menu, lambda target: self.app.preview_sync_library_rows(target, self._selected_library_rows()))
             menu.add_separator()
             menu.add_command(label="Open Source Folder", command=lambda: self._open_component_source(value))
@@ -1171,6 +1211,9 @@ class ActiveModsTab(ctk.CTkFrame):
         elif kind == "workshop":
             menu.add_command(label="Download / Update with SteamCMD", command=lambda: self.app.update_selected_workshop_item(value))
             menu.add_command(label="Add to Active Load Order", command=self._add_selected_library_to_active)
+            menu.add_command(label="Add to Position...", command=self._add_selected_library_to_position)
+            menu.add_command(label="Rename Display Name...", command=lambda: self.app.rename_workshop_display_name(value))
+            menu.add_command(label="Refresh Metadata", command=lambda: self.app.refresh_selected_workshop_metadata([value]))
             self._add_sync_menu_items(menu, lambda target: self.app.preview_sync_library_rows(target, self._selected_library_rows()))
             menu.add_separator()
             menu.add_command(label="Copy Workshop ID", command=lambda: self.app.copy_workshop_id(value))
@@ -1198,7 +1241,9 @@ class ActiveModsTab(ctk.CTkFrame):
             label="Disable" if entry.enabled else "Enable",
             command=lambda: self._set_selected_enabled(not entry.enabled),
         )
+        menu.add_command(label="Move to Position...", command=self._move_selected_to_position)
         menu.add_command(label="Remove from Active", command=self._remove_selected)
+        menu.add_command(label="Rename Display Name...", command=self._rename_selected_active)
         menu.add_command(label="Link Workshop ID", command=self._link_selected_active_to_workshop)
         self._add_sync_menu_items(menu, lambda target: self.app.preview_sync_active_indices(target, self._selected_active_indices()))
         menu.add_separator()
@@ -1221,6 +1266,34 @@ class ActiveModsTab(ctk.CTkFrame):
 
     def _link_selected_active_to_workshop(self) -> None:
         self.app.link_active_indices_to_workshop_id(self._selected_active_indices())
+
+    def _rename_selected_active(self) -> None:
+        self.app.rename_active_indices_display_name(self._selected_active_indices())
+
+    def _move_selected_to_position(self) -> None:
+        indices = self._selected_active_indices()
+        if not indices:
+            self.app.notify_warning("No Active Mods Selected", "Select one or more active mods first.", popup=False)
+            return
+        position = self._ask_position(
+            "Move to Position",
+            f"Position in Active Load Order (1-{len(self.app.active_mods)}):",
+            minimum=1,
+            maximum=len(self.app.active_mods),
+        )
+        if position is None:
+            return
+        moved = self.app.move_active_mods_to_index(indices, position - 1)
+        self._select_active_actual_indices(moved)
+
+    def _ask_position(self, title: str, prompt: str, *, minimum: int, maximum: int) -> int | None:
+        return simpledialog.askinteger(
+            title,
+            prompt,
+            parent=self,
+            minvalue=minimum,
+            maxvalue=maximum,
+        )
 
     def _add_sync_menu_items(self, menu: tk.Menu, callback) -> None:
         menu.add_separator()
@@ -1410,3 +1483,19 @@ def _workshop_status_label(item: WorkshopItem) -> str:
     if item.status == WORKSHOP_STATUS_DUPLICATE_PAK:
         return "Multiple pak"
     return "Unknown"
+
+
+def _safe_size(path: Path) -> int:
+    try:
+        return path.stat().st_size
+    except OSError:
+        return 0
+
+
+def _timestamp_label(timestamp: int | float) -> str:
+    if not timestamp:
+        return "unknown"
+    try:
+        return datetime.fromtimestamp(float(timestamp)).strftime("%Y-%m-%d %H:%M")
+    except (OSError, ValueError, OverflowError):
+        return "unknown"

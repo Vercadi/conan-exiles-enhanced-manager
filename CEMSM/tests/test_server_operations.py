@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import os
+from types import SimpleNamespace
+
 from conan_manager.core.discovery import discover_all
 from conan_manager.core.server_config import read_server_config
 from conan_manager.core.server_launcher import build_client_launch_plan, build_launch_plan, split_launch_args
+from conan_manager.core import server_process
 from conan_manager.core.server_logs import filter_mod_related_lines, read_server_log_snapshot
 from conan_manager.core.server_process import ServerProcessService
 from conan_manager.models.server import ProcessInfo, ServerRuntimeState
@@ -23,6 +27,24 @@ def test_process_detection_uses_injected_process_list() -> None:
     assert status.running
     assert status.processes[0].pid == 2
     assert "ConanSandboxServer-Win64-Shipping.exe" in status.summary
+
+
+def test_tasklist_provider_hides_helper_console_on_windows(monkeypatch) -> None:
+    captured = {}
+
+    def fake_run(command, **kwargs):
+        captured["command"] = command
+        captured.update(kwargs)
+        return SimpleNamespace(returncode=0, stdout='"ConanSandboxServer.exe","123","Console","1","10,000 K"\n')
+
+    monkeypatch.setattr(server_process.subprocess, "run", fake_run)
+
+    processes = server_process.tasklist_process_provider()
+
+    assert processes[0].name == "ConanSandboxServer.exe"
+    assert captured["command"] == ["tasklist", "/FO", "CSV", "/NH"]
+    if os.name == "nt":
+        assert "creationflags" in captured or "startupinfo" in captured
 
 
 def test_server_config_parser_extracts_core_fields(tmp_path) -> None:

@@ -62,6 +62,7 @@ class SupportDiagnosticsService:
         active_mods: Iterable[ActiveModEntry] = (),
         workshop_items: Iterable[WorkshopItem] = (),
         steamcmd_path: Path | str | None = None,
+        mod_note_count: int = 0,
         log_tail_lines: int = 80,
     ) -> str:
         sections = [
@@ -69,7 +70,7 @@ class SupportDiagnosticsService:
             self._feature_summary(),
             self._steam_summary(paths),
             self._steamcmd_summary(steamcmd_path),
-            self._mod_summary(active_mods, workshop_items),
+            self._mod_summary(active_mods, workshop_items, mod_note_count=mod_note_count),
             self._target_summary(paths),
             self._hosted_summary(hosted_profiles),
             self._activity_summary(activity_records),
@@ -132,7 +133,12 @@ class SupportDiagnosticsService:
         )
 
     @staticmethod
-    def _mod_summary(active_mods: Iterable[ActiveModEntry], workshop_items: Iterable[WorkshopItem]) -> str:
+    def _mod_summary(
+        active_mods: Iterable[ActiveModEntry],
+        workshop_items: Iterable[WorkshopItem],
+        *,
+        mod_note_count: int = 0,
+    ) -> str:
         active_list = list(active_mods)
         workshop_list = list(workshop_items)
         return "\n".join(
@@ -143,6 +149,7 @@ class SupportDiagnosticsService:
                 f"- Workshop cached: {len(workshop_list)}",
                 f"- Workshop downloaded: {sum(1 for item in workshop_list if item.status == WORKSHOP_STATUS_DOWNLOADED)}",
                 f"- Workshop missing download: {sum(1 for item in workshop_list if item.status == WORKSHOP_STATUS_MISSING)}",
+                f"- Mod notes: {int(mod_note_count)}",
             ]
         )
 

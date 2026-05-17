@@ -6,6 +6,8 @@ import tkinter as tk
 
 import customtkinter as ctk
 
+from ...core.size_formatting import format_bytes
+from ...core.workshop_service import workshop_display_name
 from ...models.workshop import (
     WORKSHOP_STATUS_DOWNLOADED,
     WORKSHOP_STATUS_DUPLICATE_PAK,
@@ -74,8 +76,9 @@ class WorkshopTab(ctk.CTkFrame):
         self._button(buttons, "Cancel Scan", self.app.cancel_workshop_scan, row=3)
         self._download_missing_button = self._button(buttons, "Download Missing", self._download_missing, row=4)
         self._update_all_button = self._button(buttons, "Update Downloaded", self._update_all_downloaded, row=5)
-        self._cancel_steamcmd_button = self._button(buttons, "Cancel SteamCMD", self.app.cancel_workshop_steamcmd, row=6)
-        self._button(buttons, "SteamCMD Settings", lambda: self.app.select_tab("Settings"), row=7)
+        self._button(buttons, "Fetch Titles", self._fetch_titles, row=6)
+        self._cancel_steamcmd_button = self._button(buttons, "Cancel SteamCMD", self.app.cancel_workshop_steamcmd, row=7)
+        self._button(buttons, "SteamCMD Settings", lambda: self.app.select_tab("Settings"), row=8)
 
         list_frame = ctk.CTkFrame(self, fg_color="#191715", border_width=1, border_color="#3a3028")
         list_frame.grid(row=2, column=0, sticky="nsew", padx=10, pady=6)
@@ -237,6 +240,8 @@ class WorkshopTab(ctk.CTkFrame):
         menu = tk.Menu(self, tearoff=0, bg="#191715", fg="#f1e7d0", activebackground="#7d4429")
         menu.add_command(label="Add to Active Load Order", command=self._add_selected_to_active)
         menu.add_command(label="Download / Update with SteamCMD", command=self._update_selected)
+        menu.add_command(label="Refresh Metadata", command=self._refresh_selected_metadata)
+        menu.add_command(label="Rename Display Name...", command=lambda: self.app.rename_workshop_display_name(item.workshop_id))
         menu.add_command(label="Copy Workshop ID", command=lambda: self.app.copy_workshop_id(item.workshop_id))
         menu.add_command(label="Open Workshop Folder", command=lambda: self.app.open_path_in_shell(item.folder_path))
         menu.add_separator()
@@ -271,11 +276,13 @@ class WorkshopTab(ctk.CTkFrame):
             self._detail_label.configure(text="Select a Workshop item to see local pak status.")
             return
         modified = datetime.fromtimestamp(item.modified_time).strftime("%Y-%m-%d %H:%M") if item.modified_time else "unknown"
+        remote_updated = datetime.fromtimestamp(item.remote_time_updated).strftime("%Y-%m-%d %H:%M") if item.remote_time_updated else "unknown"
         pak_summary = ", ".join(path.name for path in item.pak_paths) if item.pak_paths else "none"
         self._detail_label.configure(
             text=(
-                f"ID {item.workshop_id} | {STATUS_LABELS.get(item.status, item.status)} | "
-                f"{len(item.pak_paths)} pak(s): {pak_summary} | modified {modified}"
+                f"{workshop_display_name(item)} | ID {item.workshop_id} | {STATUS_LABELS.get(item.status, item.status)} | "
+                f"{len(item.pak_paths)} pak(s): {pak_summary} | local {format_bytes(item.local_size)} | "
+                f"Steam size {format_bytes(item.remote_file_size)} | local modified {modified} | Steam updated {remote_updated}"
             )
         )
 
@@ -315,12 +322,22 @@ class WorkshopTab(ctk.CTkFrame):
     def _download_missing(self) -> None:
         self.app.download_missing_workshop_items()
 
+    def _fetch_titles(self) -> None:
+        self.app.fetch_missing_workshop_metadata()
+
     def _update_selected(self) -> None:
         items = self._selected_items()
         if not items:
             item = self._selected_item()
             items = [item] if item else []
         self.app.update_selected_workshop_items([item.workshop_id for item in items])
+
+    def _refresh_selected_metadata(self) -> None:
+        items = self._selected_items()
+        if not items:
+            item = self._selected_item()
+            items = [item] if item else []
+        self.app.refresh_selected_workshop_metadata([item.workshop_id for item in items])
 
     def _forget_selected(self) -> None:
         ids = [item.workshop_id for item in self._selected_items()]
@@ -343,4 +360,4 @@ class WorkshopTab(ctk.CTkFrame):
 def _row_text(item: WorkshopItem) -> str:
     status = STATUS_LABELS.get(item.status, item.status)
     pak_count = len(item.pak_paths)
-    return f"{item.workshop_id} | {status:<13} | {pak_count:>2} pak(s) | {item.display_title}"
+    return f"{item.workshop_id} | {status:<13} | {pak_count:>2} pak(s) | {workshop_display_name(item)}"

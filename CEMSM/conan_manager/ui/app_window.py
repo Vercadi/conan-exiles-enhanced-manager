@@ -36,8 +36,9 @@ from ..core.hosted_service import (
     test_remote_connection,
 )
 from ..core.lazy_tabs import LazyTabController
-from ..core.local_mod_library import LocalModLibraryStore, component_to_active_entry
+from ..core.local_mod_library import LocalModLibraryStore, component_to_active_entry, normalize_mod_display_name
 from ..core.logging_service import setup_logging
+from ..core.mod_notes_store import ModNotesStore, filter_note_subjects, note_key_for_active_entry, subjects_for_mods
 from ..core.mod_profile_store import ModProfileStore
 from ..core.modlist_service import (
     active_entries_from_modlist,
@@ -90,6 +91,7 @@ from ..core.target_actions import move_items_to_edge, move_items_to_index, selec
 from ..core.update_checker import ReleaseInfo, check_for_update
 from ..core.vanilla_restore import apply_vanilla_restore, build_vanilla_restore_plans, preview_vanilla_restore_text
 from ..core.workshop_cache import WorkshopCache
+from ..core.workshop_metadata import WorkshopMetadataError, fetch_workshop_metadata
 from ..core.workshop_parser import parse_workshop_ids
 from ..core.workshop_service import WorkshopService, workshop_display_name
 from ..models.app_paths import ConanAppPaths
@@ -121,6 +123,7 @@ from .tabs.server_tab import ServerTab
 from .tabs.settings_tab import SettingsTab
 from .tabs.workshop_tab import WorkshopTab
 from .tabs.help_tab import HelpTab
+from .tabs.notes_tab import NotesTab
 from .ui_tokens import UiTokens, ui_tokens_for_size
 
 log = logging.getLogger(__name__)
@@ -228,6 +231,7 @@ class AppWindow(ctk.CTk):
         self.mod_profiles = ModProfileStore(self.paths.data_dir or DEFAULT_DATA_DIR)
         self.active_mods = self.mod_profiles.list_entries()
         self.mod_library = LocalModLibraryStore(self.paths.data_dir or DEFAULT_DATA_DIR)
+        self.mod_notes = ModNotesStore(self.paths.data_dir or DEFAULT_DATA_DIR)
         self.profile_store = ProfileStore(self.paths.data_dir or DEFAULT_DATA_DIR)
         self.named_mod_profiles = self.profile_store.list_mod_profiles()
         self.server_profiles = self.profile_store.list_server_profiles()
@@ -238,6 +242,11 @@ class AppWindow(ctk.CTk):
         self.hosted_store = HostedProfileStore(self.paths.data_dir or DEFAULT_DATA_DIR)
         self.hosted_profiles = self.hosted_store.list_profiles()
         self.server_process = ServerProcessService()
+        self.mod_notes.migrate_existing_notes(
+            active_mods=self.active_mods,
+            components=self.mod_library.list_components(),
+            workshop_items=[],
+        )
         if not self.preferences.steamcmd_path:
             detected_steamcmd = detect_steamcmd_path(self.paths.data_dir or DEFAULT_DATA_DIR)
             if detected_steamcmd:
@@ -318,7 +327,7 @@ class AppWindow(ctk.CTk):
         )
         self.tabs.grid(row=2, column=0, sticky="nsew", padx=8, pady=(0, 8))
         self._tab_frames = {}
-        for name in ("Dashboard", "Workshop", "Active Mods", "Profiles", "Server", "Hosted", "Settings", "Help"):
+        for name in ("Dashboard", "Workshop", "Active Mods", "Profiles", "Notes", "Server", "Hosted", "Settings", "Help"):
             frame = self.tabs.add(name)
             frame.grid_columnconfigure(0, weight=1)
             frame.grid_rowconfigure(0, weight=1)
@@ -329,6 +338,7 @@ class AppWindow(ctk.CTk):
                 "Workshop": lambda: self._construct_tab("Workshop", WorkshopTab, "workshop_tab"),
                 "Active Mods": lambda: self._construct_tab("Active Mods", ActiveModsTab, "active_mods_tab"),
                 "Profiles": lambda: self._construct_tab("Profiles", ProfilesTab, "profiles_tab"),
+                "Notes": lambda: self._construct_tab("Notes", NotesTab, "notes_tab"),
                 "Server": lambda: self._construct_tab("Server", ServerTab, "server_tab"),
                 "Hosted": lambda: self._construct_tab("Hosted", HostedTab, "hosted_tab"),
                 "Settings": lambda: self._construct_tab("Settings", SettingsTab, "settings_tab"),
@@ -733,6 +743,8 @@ class AppWindow(ctk.CTk):
             self.workshop_tab.refresh()
         if hasattr(self, "profiles_tab"):
             self.profiles_tab.refresh()
+        if hasattr(self, "notes_tab"):
+            self.notes_tab.refresh()
         if hasattr(self, "server_tab"):
             self.server_tab.refresh()
         if hasattr(self, "hosted_tab"):
@@ -780,6 +792,7 @@ class AppWindow(ctk.CTk):
             active_mods=self.active_mods,
             workshop_items=self.workshop_items,
             steamcmd_path=self.resolved_steamcmd_path(),
+            mod_note_count=self.mod_notes.note_count(),
         )
         self.clipboard_clear()
         self.clipboard_append(report)
@@ -801,6 +814,40 @@ class AppWindow(ctk.CTk):
 
     def snapshot_records(self, category: str | None = None) -> list[BackupRecord]:
         return list_snapshots(self.backup, category=category)
+
+    def note_subjects(self, filter_value: str = "All"):
+        self._ensure_workshop_services()
+        subjects = subjects_for_mods(
+            active_mods=self.active_mods,
+            components=self.mod_library.list_components(),
+            workshop_items=self.workshop_items,
+        )
+        return filter_note_subjects(subjects, self.mod_notes.list_notes(), filter_value)
+
+    def note_for_key(self, key: str):
+        return self.mod_notes.get(key)
+
+    def note_text_for_key(self, key: str) -> str:
+        note = self.mod_notes.get(key)
+        return note.text if note else ""
+
+    def note_text_for_active_entry(self, entry: ActiveModEntry) -> str:
+        return self.note_text_for_key(note_key_for_active_entry(entry))
+
+    def save_mod_note(self, subject, text: str) -> None:
+        self.mod_notes.upsert(subject, text)
+        self.last_action = f"Saved note for {subject.display_name}."
+        self.status_text = self.last_action
+        self.show_banner("success", self.last_action)
+        self.record_activity("mod note", "saved", target=subject.key, details=subject.display_name)
+        self._refresh_main_tabs()
+
+    def clear_mod_note(self, key: str) -> None:
+        cleared = self.mod_notes.clear(key)
+        self.last_action = "Cleared mod note." if cleared else "No note text to clear."
+        self.status_text = self.last_action
+        self.show_banner("info", self.last_action)
+        self._refresh_main_tabs()
 
     def save_current_mod_profile(
         self,
@@ -1281,6 +1328,69 @@ class AppWindow(ctk.CTk):
         self._refresh_main_tabs()
         return len(self.workshop_items)
 
+    def fetch_missing_workshop_metadata(self) -> int:
+        self._ensure_workshop_services()
+        ids = [
+            item.workshop_id
+            for item in self.workshop_items
+            if item.workshop_id and not item.title and not item.display_name_override
+        ]
+        return self.fetch_workshop_metadata_for_ids(ids, action_label="Fetch Workshop titles")
+
+    def refresh_selected_workshop_metadata(self, workshop_ids: list[str]) -> int:
+        return self.fetch_workshop_metadata_for_ids(workshop_ids, action_label="Refresh Workshop metadata")
+
+    def fetch_workshop_metadata_for_ids(self, workshop_ids: list[str], *, action_label: str = "Fetch Workshop metadata") -> int:
+        self._ensure_workshop_services()
+        ids = [workshop_id for workshop_id in dict.fromkeys(str(value).strip() for value in workshop_ids) if workshop_id]
+        if not ids:
+            self.notify_warning("No Workshop IDs", "Select or add Workshop IDs before fetching metadata.", popup=False)
+            return 0
+        try:
+            metadata_items = fetch_workshop_metadata(ids)
+        except WorkshopMetadataError as exc:
+            self.last_action = f"{action_label} failed: {exc}"
+            self.status_text = self.last_action
+            self.show_banner("warning", self.last_action)
+            self.record_activity("workshop metadata", "failed", target=", ".join(ids), details=str(exc))
+            self._refresh_main_tabs()
+            return 0
+        self.workshop_items = self.workshop.merge_metadata(metadata_items)
+        updated = self._update_generated_workshop_active_names(ids)
+        self.last_action = f"{action_label}: updated {len(metadata_items)} Workshop item(s)."
+        if updated:
+            self.last_action += f" Refreshed {updated} active display name(s)."
+        self.status_text = self.last_action
+        self.show_banner("success" if metadata_items else "info", self.last_action)
+        self.record_activity("workshop metadata", "completed", target=", ".join(ids), details=self.last_action)
+        self._refresh_main_tabs()
+        return len(metadata_items)
+
+    def rename_workshop_display_name(self, workshop_id: str) -> bool:
+        self._ensure_workshop_services()
+        item = self.workshop_cache.get(workshop_id) if self.workshop_cache else None
+        if item is None:
+            self.notify_warning("Workshop Item Missing", "The selected Workshop item is not in the local cache.", popup=False)
+            return False
+        value = simpledialog.askstring(
+            "Rename Workshop Display",
+            "Display name (blank clears manual override):",
+            initialvalue=item.display_name_override or workshop_display_name(item),
+            parent=self,
+        )
+        if value is None:
+            return False
+        item.display_name_override = value.strip()
+        self.workshop_items = self.workshop.merge_metadata([])
+        if self.workshop_cache:
+            self.workshop_cache.save(self.workshop_items)
+        self._update_generated_workshop_active_names([workshop_id], force=True)
+        self.last_action = f"Updated display name for Workshop {workshop_id}."
+        self.status_text = self.last_action
+        self.show_banner("success", self.last_action)
+        self._refresh_main_tabs()
+        return True
+
     def remove_workshop_cache_entries(self, workshop_ids: list[str], *, refresh: bool = True) -> int:
         self._ensure_workshop_services()
         ids = [str(value).strip() for value in workshop_ids if str(value).strip()]
@@ -1480,6 +1590,28 @@ class AppWindow(ctk.CTk):
         self._refresh_main_tabs()
         return True
 
+    def _update_generated_workshop_active_names(self, workshop_ids: list[str], *, force: bool = False) -> int:
+        self._ensure_workshop_services()
+        ids = {str(value).strip() for value in workshop_ids if str(value).strip()}
+        if not ids:
+            return 0
+        by_id = {item.workshop_id: item for item in self.workshop_items}
+        changed = 0
+        for entry in self.active_mods:
+            if not entry.workshop_id or entry.workshop_id not in ids:
+                continue
+            item = by_id.get(entry.workshop_id)
+            if item is None:
+                continue
+            new_name = workshop_display_name(item)
+            if force or _active_workshop_name_is_generated(entry):
+                if entry.display_name != new_name:
+                    entry.display_name = new_name
+                    changed += 1
+        if changed:
+            self.save_active_mods()
+        return changed
+
     def _add_active_entry(self, entry: ActiveModEntry, *, quiet: bool) -> bool:
         entry_key = _active_entry_identity(entry)
         existing = {_active_entry_identity(active) for active in self.active_mods}
@@ -1554,6 +1686,31 @@ class AppWindow(ctk.CTk):
         self.record_activity("workshop link", "completed", target=workshop_id, details=f"{changed} active mod(s)")
         self._refresh_main_tabs()
         return changed
+
+    def rename_active_indices_display_name(self, indices: list[int]) -> int:
+        entries = selected_active_entries(self.active_mods, indices)
+        if not entries:
+            self.notify_warning("No Active Mods Selected", "Select one active mod to rename.", popup=False)
+            return 0
+        if len(entries) > 1:
+            self.notify_warning("Select One Mod", "Rename one active mod at a time.", popup=False)
+            return 0
+        entry = entries[0]
+        value = simpledialog.askstring(
+            "Rename Active Mod",
+            "Display name (blank resets to source name):",
+            initialvalue=entry.display_name or Path(entry.value).stem,
+            parent=self,
+        )
+        if value is None:
+            return 0
+        entry.display_name = normalize_mod_display_name(value) if value.strip() else normalize_mod_display_name(Path(entry.value).stem)
+        self.save_active_mods()
+        self.last_action = f"Renamed active mod to {entry.display_name}."
+        self.status_text = self.last_action
+        self.show_banner("success", self.last_action)
+        self._refresh_main_tabs()
+        return 1
 
     def copy_ordered_workshop_ids(self) -> int:
         ids = [entry.workshop_id for entry in self.active_mods if entry.workshop_id]
@@ -2346,6 +2503,8 @@ class AppWindow(ctk.CTk):
             self.active_mods_tab.refresh(selected_index=selected_mod_index)
         if hasattr(self, "profiles_tab"):
             self.profiles_tab.refresh()
+        if hasattr(self, "notes_tab"):
+            self.notes_tab.refresh()
         if hasattr(self, "server_tab"):
             self.server_tab.refresh()
         if hasattr(self, "hosted_tab"):
@@ -2366,6 +2525,17 @@ def _active_entry_identity(entry: ActiveModEntry) -> str:
     if entry.component_id:
         return f"component:{entry.component_id}"
     return f"value:{_entry_key(entry.value)}"
+
+
+def _active_workshop_name_is_generated(entry: ActiveModEntry) -> bool:
+    current = normalize_mod_display_name(entry.display_name or "")
+    if not current:
+        return True
+    generated = {
+        normalize_mod_display_name(f"Workshop {entry.workshop_id}"),
+        normalize_mod_display_name(Path(entry.value).stem),
+    }
+    return current in generated
 
 
 def _preview_text(plans: list[ModlistTargetPlan]) -> str:

@@ -14,6 +14,7 @@ from ..models.workshop import (
     WORKSHOP_STATUS_MISSING,
     WorkshopItem,
 )
+from .subprocess_window import hidden_subprocess_kwargs
 
 CONAN_WORKSHOP_APP_ID = "440900"
 
@@ -130,7 +131,6 @@ def run_steamcmd(
     cancel_event: threading.Event | None = None,
 ) -> SteamCmdRunResult:
     lines: list[str] = []
-    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     try:
         process = subprocess.Popen(
             command,
@@ -140,7 +140,7 @@ def run_steamcmd(
             text=True,
             encoding="utf-8",
             errors="replace",
-            creationflags=creationflags,
+            **hidden_subprocess_kwargs(),
         )
     except OSError as exc:
         return SteamCmdRunResult(command=command, returncode=1, error=str(exc))

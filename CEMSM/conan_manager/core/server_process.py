@@ -8,6 +8,7 @@ from io import StringIO
 from typing import Callable, Iterable
 
 from ..models.server import ProcessInfo, ServerProcessStatus
+from .subprocess_window import hidden_subprocess_kwargs
 
 SERVER_PROCESS_NAMES = {
     "conansandboxserver.exe",
@@ -36,6 +37,7 @@ def tasklist_process_provider() -> list[ProcessInfo]:
             text=True,
             encoding="utf-8",
             errors="replace",
+            **hidden_subprocess_kwargs(),
         )
     except OSError:
         return []

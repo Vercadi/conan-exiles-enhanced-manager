@@ -27,6 +27,7 @@ from conan_manager.core.target_actions import (
     move_items_to_index,
     next_first_letter_index,
     selected_active_entries,
+    validate_one_based_position,
 )
 from conan_manager.core.vanilla_restore import apply_vanilla_restore, build_vanilla_restore_plans
 from conan_manager.models.modlist import TARGET_BOTH, TARGET_CLIENT, TARGET_DEDICATED_SERVER, ActiveModEntry
@@ -78,6 +79,17 @@ def test_move_items_to_index_accounts_for_removed_selected_items() -> None:
 
     assert moved_values == ["A", "C", "B", "D", "E"]
     assert moved_indices == [2, 3]
+
+
+def test_position_validator_returns_zero_based_index_and_rejects_invalid() -> None:
+    assert validate_one_based_position("5", minimum=1, maximum=10) == 4
+
+    try:
+        validate_one_based_position("11", minimum=1, maximum=10)
+    except ValueError as exc:
+        assert "between 1 and 10" in str(exc)
+    else:
+        raise AssertionError("Expected invalid position to raise")
 
 
 def test_dropped_mod_file_classification_preserves_supported_groups() -> None:

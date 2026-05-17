@@ -3,6 +3,10 @@ from __future__ import annotations
 from pathlib import Path
 
 from conan_manager.core.modlist_service import active_entry_from_workshop_item
+from conan_manager.core.workshop_metadata import (
+    build_published_file_details_payload,
+    parse_published_file_details_response,
+)
 from conan_manager.core.workshop_cache import WorkshopCache
 from conan_manager.core.workshop_parser import UINT64_MAX, parse_workshop_ids
 from conan_manager.core.workshop_service import WorkshopService
@@ -74,6 +78,15 @@ def test_workshop_cache_roundtrip_preserves_metadata(tmp_path) -> None:
         modified_time=123.5,
         status=WORKSHOP_STATUS_DOWNLOADED,
         compatibility_note="Enhanced compatibility unknown",
+        display_name_override="Manual Name",
+        remote_file_size=123456,
+        remote_time_updated=1778083723,
+        consumer_app_id=440900,
+        creator_app_id=440900,
+        preview_url="https://example.invalid/preview.jpg",
+        tags=["Enhanced"],
+        metadata_result=1,
+        metadata_fetched_at=100.0,
     )
 
     cache.save([item])
@@ -82,7 +95,92 @@ def test_workshop_cache_roundtrip_preserves_metadata(tmp_path) -> None:
     assert len(loaded) == 1
     assert loaded[0].workshop_id == "123"
     assert loaded[0].title == "A Test Mod"
+    assert loaded[0].display_name_override == "Manual Name"
+    assert loaded[0].remote_file_size == 123456
+    assert loaded[0].tags == ["Enhanced"]
     assert loaded[0].pak_paths == [tmp_path / "123" / "Test.pak"]
+
+
+def test_workshop_display_title_prefers_steam_title_before_manual_fallback() -> None:
+    item = WorkshopItem(workshop_id="123", title="Steam Title", display_name_override="Manual Name")
+
+    assert item.display_title == "Steam Title"
+
+
+def test_workshop_metadata_payload_uses_indexed_uint64_safe_ids() -> None:
+    payload = build_published_file_details_payload(["3720667122", "3720667122", "18446744073709551615"])
+
+    assert "itemcount=2" in payload
+    assert "publishedfileids%5B0%5D=3720667122" in payload
+    assert "publishedfileids%5B1%5D=18446744073709551615" in payload
+
+
+def test_workshop_metadata_parser_handles_title_size_and_wrong_app() -> None:
+    parsed = parse_published_file_details_response(
+        {
+            "response": {
+                "publishedfiledetails": [
+                    {
+                        "publishedfileid": "3720667122",
+                        "result": 1,
+                        "title": "Enhanced Gliders",
+                        "file_size": "5192425",
+                        "time_updated": 1778083723,
+                        "consumer_app_id": 440900,
+                        "creator_app_id": 440900,
+                        "preview_url": "https://example.invalid/preview.jpg",
+                        "tags": [{"tag": "Enhanced"}],
+                    },
+                    {
+                        "publishedfileid": "123",
+                        "result": 1,
+                        "title": "Wrong Game",
+                        "consumer_app_id": 12345,
+                    },
+                ]
+            }
+        },
+        fetched_at=10.0,
+    )
+
+    assert parsed[0].title == "Enhanced Gliders"
+    assert parsed[0].file_size == 5192425
+    assert parsed[0].tags == ["Enhanced"]
+    assert parsed[0].warning == ""
+    assert parsed[1].warning == "Workshop item belongs to app 12345, expected 440900."
+
+
+def test_workshop_metadata_merge_preserves_order_and_paths(tmp_path) -> None:
+    folder = tmp_path / "workshop" / "3720667122"
+    folder.mkdir(parents=True)
+    pak = folder / "AdvancedGliders.pak"
+    pak.write_bytes(b"pak")
+    cache = WorkshopCache(tmp_path / "data")
+    service = WorkshopService(cache)
+    service.scan(folder.parent)
+    metadata = parse_published_file_details_response(
+        {
+            "response": {
+                "publishedfiledetails": [
+                    {
+                        "publishedfileid": "3720667122",
+                        "result": 1,
+                        "title": "Enhanced Gliders",
+                        "file_size": "5192425",
+                        "consumer_app_id": 440900,
+                    }
+                ]
+            }
+        },
+        fetched_at=10.0,
+    )
+
+    items = service.merge_metadata(metadata)
+
+    assert [item.workshop_id for item in items] == ["3720667122"]
+    assert items[0].title == "Enhanced Gliders"
+    assert items[0].remote_file_size == 5192425
+    assert items[0].pak_paths == [pak]
 
 
 def test_workshop_cache_remove_forgets_record_without_touching_folder(tmp_path) -> None:

@@ -189,7 +189,10 @@ class HelpTab(ctk.CTkFrame):
             backup_root=self.app.paths.backup_dir,
             hosted_profiles=self.app.hosted_profiles,
             activity_records=self.app.activity_records(limit=20),
+            active_mods=self.app.active_mods,
+            workshop_items=self.app.workshop_items,
+            steamcmd_path=self.app.resolved_steamcmd_path(),
+            mod_note_count=self.app.mod_notes.note_count(),
         )
         Path(path).write_text(report, encoding="utf-8")
         self.app.notify_info("Support Info Saved", f"Saved support info to {path}.")
-

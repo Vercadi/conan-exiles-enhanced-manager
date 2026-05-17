@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.4.3 - Workshop Metadata, Position Actions, And Notes
+
+- Added public Steam Workshop metadata fetching for real Workshop titles, remote file size, update time, tags, and preview metadata.
+- Added Library `Inactive / Not Active` filtering for mods not currently in Active Load Order.
+- Added right-click `Add to Position...` and `Move to Position...` load-order actions.
+- Added a persistent Notes tab for per-mod notes that survive removing and re-adding mods.
+- Added pak, companion, archive, Workshop local, and Workshop remote size details where available.
+- Removed the duplicate Steam Workshop Settings card; Workshop path remains under Local Paths.
+- Hid background helper subprocess windows used for dedicated-server process detection, preventing black command-window flashes during status refreshes.
+- Kept Workshop metadata lookup credential-free and non-destructive; no subscribe/unsubscribe or Workshop file deletion.
+
 ## v1.4.2 - First-Run, Paths, And Active Mods Feedback Patch
 
 - Added first-run setup for client, optional dedicated server, Workshop, and SteamCMD paths.

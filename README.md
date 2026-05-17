@@ -3,16 +3,18 @@
 A Windows desktop manager for **Conan Exiles Enhanced** mods, Steam Workshop modlists, local dedicated servers, hosted FTP/SFTP servers, profiles, backups, and recovery.
 
 **GitHub:** https://github.com/Vercadi/conan-exiles-enhanced-manager<br>
-**Nexus Mods:** first public Nexus release pending<br>
+**Nexus Mods:** available on Nexus Mods<br>
 **Support:** https://ko-fi.com/vercadi | https://www.patreon.com/cw/Vercadi
 
 ## Features
 
 - Detects the Conan Exiles client, Conan Exiles Dedicated Server, Steam build IDs, config folders, saves, logs, and Workshop content.
 - Scans Steam Workshop content for app id `440900`.
+- Fetches public Steam Workshop metadata for real mod titles, remote size, update time, tags, and preview metadata.
 - Downloads and updates Workshop items through SteamCMD after explicit user action.
 - Manages a local mod library for raw `.pak` files, companion `.ucas`/`.utoc` files, linked external paks, and zip archives.
-- Preserves Active Mods load order with enable/disable, missing-file warnings, and client/server parity checks.
+- Preserves Active Mods load order with enable/disable, position actions, missing-file warnings, and client/server parity checks.
+- Stores persistent per-mod notes for Workshop, local, archive, and active load-order entries.
 - Safely previews and writes `modlist.txt` for the client, dedicated server, or both.
 - Copies managed local paks and companion files into target `ConanSandbox/Mods` folders only during explicit apply.
 - Starts the local dedicated server only when explicitly requested.
@@ -22,7 +24,7 @@ A Windows desktop manager for **Conan Exiles Enhanced** mods, Steam Workshop mod
 
 ## Screenshots
 
-Screenshots will be added with the first packaged release.
+Screenshots are available on the Nexus Mods page.
 
 - Dashboard
 - Workshop
